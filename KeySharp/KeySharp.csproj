@@ -1,0 +1,21 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<OutputType>WinExe</OutputType>
+		<!-- The "windows10.0.19041.0" part is CRITICAL. It unlocks the LampArray and Windows.Devices APIs -->
+		<TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+		<Nullable>enable</Nullable>
+		<UseWPF>true</UseWPF>
+		<!-- This allows the System Tray NotifyIcon to work -->
+		<UseWindowsForms>true</UseWindowsForms>
+		<!-- Fixes the Appx packaging errors -->
+		<GenerateAppxPackageOnBuild>false</GenerateAppxPackageOnBuild>
+	</PropertyGroup>
+
+	<!-- Your NuGet Packages -->
+	<ItemGroup>
+		<PackageReference Include="NAudio" Version="2.2.1" />
+		<PackageReference Include="WPF-UI" Version="4.2.0" />
+	</ItemGroup>
+
+</Project>

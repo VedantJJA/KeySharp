@@ -1,0 +1,51 @@
+--- Visual Studio & .NET ---
+
+.vs/
+[Bb]in/
+[Oo]bj/
+[Pp]ublish/
+[Ll]og/
+[Ll]ogs/
+
+--- Build Architectures ---
+
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+
+--- Windows App Packaging (KeySharp.Package) ---
+
+AppPackages/
+BundleArtifacts/
+Package.StoreAssociation.xml
+_pkginfo.txt
+*.appx
+*.appxbundle
+*.msix
+*.msixupload
+*.appxupload
+
+--- User-Specific & Machine-Specific ---
+
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+Thumbs.db
+
+--- Hardware Specific Data ---
+
+Ignore your personal calibration map so it doesn't overwrite others
+
+keymap.csv
+
+--- NuGet ---
+
+Modern .NET uses global cache, but this covers local packages folders
+
+packages/
+*.nuget.props
+*.nuget.targets
