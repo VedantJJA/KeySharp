@@ -10,6 +10,7 @@
 		<UseWindowsForms>true</UseWindowsForms>
 		<!-- Fixes the Appx packaging errors -->
 		<GenerateAppxPackageOnBuild>false</GenerateAppxPackageOnBuild>
+		<Platforms>AnyCPU;x64</Platforms>
 	</PropertyGroup>
 
 	<!-- Your NuGet Packages -->

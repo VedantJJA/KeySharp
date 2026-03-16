@@ -5,7 +5,7 @@
   xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
   IgnorableNamespaces="uap uap3 rescap">
-	<Identity Name="KeySharpRGB" Publisher="CN=MyPublisher" Version="1.0.0.0" />
+	<Identity Name="KeySharpRGB" Publisher="CN=Vedant" Version="1.0.2.0" />
 	<Properties>
 		<DisplayName>KeySharp</DisplayName>
 		<PublisherDisplayName>My Publisher</PublisherDisplayName>
@@ -19,7 +19,7 @@
 	</Resources>
 	<Applications>
 		<Application Id="App" Executable="$targetnametoken$.exe" EntryPoint="$targetentrypoint$">
-			<uap:VisualElements DisplayName="KeySharp" Description="Legion RGB Controller" BackgroundColor="transparent" Square150x150Logo="Images\Square150x150Logo.png" Square44x44Logo="Images\Square44x44Logo.png">
+			<uap:VisualElements DisplayName="KeySharp Pro" Description="Legion RGB Controller" BackgroundColor="transparent" Square150x150Logo="Images\Square150x150Logo.png" Square44x44Logo="Images\Square44x44Logo.png">
 				<uap:DefaultTile Wide310x150Logo="Images\Wide310x150Logo.png" />
 				<uap:SplashScreen Image="Images\SplashScreen.png" />
 			</uap:VisualElements>

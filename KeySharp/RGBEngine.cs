@@ -9,7 +9,7 @@ using Windows.Devices.Enumeration;
 using Windows.Devices.Lights;
 using Windows.System;
 using WinUIColor = Windows.UI.Color;
-using NAudio.Wave; // Requires NAudio NuGet package
+using NAudio.Wave;
 
 namespace KeySharp
 {
@@ -40,7 +40,7 @@ namespace KeySharp
     {
         private LampArray? _lampArray;
         private LightMode _currentMode = LightMode.Static;
-        private WinUIColor _currentColor = WinUIColor.FromArgb(255, 0, 0, 255);
+        private WinUIColor _currentColor = WinUIColor.FromArgb(255, 0, 122, 255);
         private Random _rng = new Random();
 
         // Audio Variables
@@ -53,18 +53,26 @@ namespace KeySharp
         private CancellationTokenSource _cts = new CancellationTokenSource();
         private bool _isReconnecting = false;
         private double _rainbowHue = 0;
-        private int _waveSpeedMs = 40;
-        private int _maxWaveSteps = 10;
+        private int _waveSpeedMs = 20;
+        private int _maxWaveSteps = 5;
         private int _rippleWidth = 1;
         private double _globalBrightness = 1.0;
         private bool _isBounceEnabled = false;
 
         private ConcurrentDictionary<int, double> _activeRipples = new ConcurrentDictionary<int, double>();
         private ConcurrentDictionary<int, WinUIColor> _rippleColors = new ConcurrentDictionary<int, WinUIColor>();
+
+        private readonly object _wavesLock = new object();
         private List<SequentialWave> _activeWaves = new List<SequentialWave>();
 
         private int _calibrationIndex = 0;
         private ConcurrentDictionary<int, List<int>> _calibrationMap = new ConcurrentDictionary<int, List<int>>();
+
+        // Cache for Calibration Frame to prevent garbage collection and eliminate flicker
+        private WinUIColor[] _calibColorsCache = Array.Empty<WinUIColor>();
+        private int[] _calibIndicesCache = Array.Empty<int>();
+
+        private string _configPath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "last_map_config.txt");
 
         public async Task InitializeAsync()
         {
@@ -74,7 +82,6 @@ namespace KeySharp
                 InitializeAudio();
                 LoadMap();
 
-                // Start the self-healing render loop
                 _ = Task.Run(() => RenderLoopAsync(_cts.Token), _cts.Token);
             }
             catch (Exception ex) { Console.WriteLine("Init Error: " + ex.Message); }
@@ -108,33 +115,49 @@ namespace KeySharp
 
         public void StopEngine()
         {
-            _cts.Cancel();
-            _capture?.StopRecording();
-            _capture?.Dispose();
+            try
+            {
+                _cts.Cancel();
+                _capture?.StopRecording();
+                _capture?.Dispose();
+            }
+            catch { }
         }
 
         private void InitializeAudio()
         {
-            _capture = new WasapiLoopbackCapture();
-            _capture.DataAvailable += (s, e) =>
+            try
             {
-                if (_currentMode != LightMode.MusicSync) return;
-
-                float max = 0;
-                var buffer = new WaveBuffer(e.Buffer);
-                for (int i = 0; i < e.BytesRecorded / 4; i++)
+                _capture = new WasapiLoopbackCapture();
+                _capture.DataAvailable += (s, e) =>
                 {
-                    float sample = Math.Abs(buffer.FloatBuffer[i]);
-                    if (sample > max) max = sample;
-                }
+                    try
+                    {
+                        if (_currentMode != LightMode.MusicSync) return;
 
-                if (max > _audioThreshold && (DateTime.Now - _lastBeatTime).TotalMilliseconds > 150)
-                {
-                    TriggerRandomRipple();
-                    _lastBeatTime = DateTime.Now;
-                }
-            };
-            _capture.StartRecording();
+                        float max = 0;
+                        var buffer = new WaveBuffer(e.Buffer);
+                        for (int i = 0; i < e.BytesRecorded / 4; i++)
+                        {
+                            float sample = Math.Abs(buffer.FloatBuffer[i]);
+                            if (sample > max) max = sample;
+                        }
+
+                        if (max > _audioThreshold && (DateTime.Now - _lastBeatTime).TotalMilliseconds > 150)
+                        {
+                            TriggerRandomRipple();
+                            _lastBeatTime = DateTime.Now;
+                        }
+                    }
+                    catch { }
+                };
+                _capture.StartRecording();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Audio Init Failed: " + ex.Message);
+                _capture = null;
+            }
         }
 
         public void SetAudioThreshold(double val) => _audioThreshold = (float)(val / 100.0);
@@ -145,25 +168,32 @@ namespace KeySharp
             int count = _lampArray.LampCount;
             if (count < 2) return;
 
-            int newOrigin;
-            int attempts = 0;
-            do
+            try
             {
-                newOrigin = _rng.Next(0, count);
-                attempts++;
+                int newOrigin;
+                int attempts = 0;
+                do
+                {
+                    newOrigin = _rng.Next(0, count);
+                    attempts++;
+                }
+                while (Math.Abs(newOrigin - _lastRippleOrigin) < (count * 0.2) && attempts < 10);
+
+                _lastRippleOrigin = newOrigin;
+
+                lock (_wavesLock)
+                {
+                    _activeWaves.Add(new SequentialWave
+                    {
+                        Origin = newOrigin,
+                        MaxSteps = _maxWaveSteps,
+                        Width = _rippleWidth,
+                        WaveColor = ColorFromHSV(_rng.Next(0, 360), 1, 1),
+                        IsPerZoneRainbow = false
+                    });
+                }
             }
-            while (Math.Abs(newOrigin - _lastRippleOrigin) < (count * 0.2) && attempts < 10);
-
-            _lastRippleOrigin = newOrigin;
-
-            _activeWaves.Add(new SequentialWave
-            {
-                Origin = newOrigin,
-                MaxSteps = _maxWaveSteps,
-                Width = _rippleWidth,
-                WaveColor = ColorFromHSV(_rng.Next(0, 360), 1, 1),
-                IsPerZoneRainbow = false
-            });
+            catch { }
         }
 
         public void SetMode(LightMode mode)
@@ -171,14 +201,18 @@ namespace KeySharp
             _currentMode = mode;
             _activeRipples.Clear();
             _rippleColors.Clear();
-            _activeWaves.Clear();
+
+            lock (_wavesLock)
+            {
+                _activeWaves.Clear();
+            }
 
             try
             {
                 _lampArray?.SetColor(WinUIColor.FromArgb(255, 0, 0, 0));
                 if (mode == LightMode.Static) UpdateHardwareColor();
             }
-            catch { /* Handled by loop */ }
+            catch { }
         }
 
         public void SetBrightness(double val) { _globalBrightness = val / 100.0; if (_currentMode == LightMode.Static) UpdateHardwareColor(); }
@@ -207,20 +241,31 @@ namespace KeySharp
                     var testZones = _calibrationMap.Where(x => x.Value.Contains(vkCode)).Select(x => x.Key).ToArray();
                     if (testZones.Length > 0)
                     {
-                        WinUIColor bColor = WinUIColor.FromArgb(255, (byte)(_currentColor.R * _globalBrightness), (byte)(_currentColor.G * _globalBrightness), (byte)(_currentColor.B * _globalBrightness));
+                        byte br = (byte)Math.Clamp(_currentColor.R * _globalBrightness, 0, 255);
+                        byte bg = (byte)Math.Clamp(_currentColor.G * _globalBrightness, 0, 255);
+                        byte bb = (byte)Math.Clamp(_currentColor.B * _globalBrightness, 0, 255);
+                        WinUIColor bColor = WinUIColor.FromArgb(255, br, bg, bb);
                         _lampArray.SetColorsForIndices(testZones.Select(_ => bColor).ToArray(), testZones);
                     }
                     return;
                 }
             }
-            catch { /* Ignore drop, let the background loop fix it */ }
+            catch { }
 
-            var zones = _calibrationMap.Where(x => x.Value.Contains(vkCode)).Select(x => x.Key).ToList();
-            foreach (var zoneIndex in zones)
+            try
             {
-                WinUIColor waveBaseColor = (_currentMode == LightMode.PerKeyRipple) ? ColorFromHSV(_rng.Next(0, 360), 1, 1) : _currentColor;
-                _activeWaves.Add(new SequentialWave { Origin = zoneIndex, MaxSteps = _maxWaveSteps, Width = _rippleWidth, WaveColor = waveBaseColor, IsPerZoneRainbow = (_currentMode == LightMode.PerZoneRipple) });
+                var zones = _calibrationMap.Where(x => x.Value.Contains(vkCode)).Select(x => x.Key).ToList();
+
+                lock (_wavesLock)
+                {
+                    foreach (var zoneIndex in zones)
+                    {
+                        WinUIColor waveBaseColor = (_currentMode == LightMode.PerKeyRipple) ? ColorFromHSV(_rng.Next(0, 360), 1, 1) : _currentColor;
+                        _activeWaves.Add(new SequentialWave { Origin = zoneIndex, MaxSteps = _maxWaveSteps, Width = _rippleWidth, WaveColor = waveBaseColor, IsPerZoneRainbow = (_currentMode == LightMode.PerZoneRipple) });
+                    }
+                }
             }
+            catch { }
         }
 
         private async Task RenderLoopAsync(CancellationToken token)
@@ -229,20 +274,17 @@ namespace KeySharp
             {
                 try
                 {
-                    // 1. Connection check
                     if (_lampArray == null)
                     {
                         if (!_isReconnecting)
                         {
                             _isReconnecting = true;
-                            Console.WriteLine("Hardware connection lost. Attempting to reconnect...");
                             _ = AttemptReconnectAsync();
                         }
-                        await Task.Delay(1000, token); // Wait before hammering the system
+                        await Task.Delay(1000, token);
                         continue;
                     }
 
-                    // 2. Render logic
                     if (_currentMode == LightMode.RainbowWave) RenderRainbow();
                     if (_currentMode >= LightMode.FixedRipple && _currentMode <= LightMode.MusicSync)
                     {
@@ -251,25 +293,30 @@ namespace KeySharp
                     }
                     if (_currentMode == LightMode.Calibration) RenderCalibrationFrame();
 
-                    // 3. Sleep until next frame
                     await Task.Delay(20, token);
                 }
                 catch (TaskCanceledException)
                 {
-                    break; // Clean exit on app close
+                    break;
                 }
                 catch (Exception ex)
                 {
-                    // CRITICAL FIX: The LampArray threw a COM exception (device asleep/disconnected)
                     Console.WriteLine($"Hardware Write Error: {ex.Message}");
-                    _lampArray = null; // Force a reconnect on the next tick
+                    _lampArray = null;
                 }
             }
         }
 
         private void ProcessSequentialWaves()
         {
-            foreach (var wave in _activeWaves.ToList())
+            List<SequentialWave> currentWaves;
+
+            lock (_wavesLock)
+            {
+                currentWaves = _activeWaves.ToList();
+            }
+
+            foreach (var wave in currentWaves)
             {
                 if ((DateTime.Now - wave.LastStepTime).TotalMilliseconds >= _waveSpeedMs)
                 {
@@ -282,8 +329,12 @@ namespace KeySharp
                     }
                     wave.CurrentDistance++;
                     wave.LastStepTime = DateTime.Now;
-                    if (wave.CurrentDistance > wave.MaxSteps) _activeWaves.Remove(wave);
                 }
+            }
+
+            lock (_wavesLock)
+            {
+                _activeWaves.RemoveAll(w => w.CurrentDistance > w.MaxSteps);
             }
         }
 
@@ -309,9 +360,11 @@ namespace KeySharp
             {
                 var color = _rippleColors.ContainsKey(item.Key) ? _rippleColors[item.Key] : _currentColor;
                 double finalIntensity = item.Value * _globalBrightness;
-                byte r = (byte)(color.R * finalIntensity), g = (byte)(color.G * finalIntensity), b = (byte)(color.B * finalIntensity);
 
-                // If this throws, RenderLoopAsync will catch it
+                byte r = (byte)Math.Clamp(color.R * finalIntensity, 0, 255);
+                byte g = (byte)Math.Clamp(color.G * finalIntensity, 0, 255);
+                byte b = (byte)Math.Clamp(color.B * finalIntensity, 0, 255);
+
                 _lampArray!.SetColorsForIndices(new[] { WinUIColor.FromArgb(255, r, g, b) }, new[] { item.Key });
 
                 _activeRipples[item.Key] -= 0.04;
@@ -327,8 +380,62 @@ namespace KeySharp
         public void BackCalibration() => _calibrationIndex = (_calibrationIndex - 1 + (_lampArray?.LampCount ?? 1)) % (_lampArray?.LampCount ?? 1);
         public int GetCurrentZoneIndex() => _calibrationIndex;
         public string GetCurrentZoneInfo() => _calibrationMap.TryGetValue(_calibrationIndex, out var keys) && keys.Count > 0 ? string.Join(", ", keys) : "None";
-        public void SaveMap(string? path = null) { string target = path ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "keymap.csv"); using StreamWriter sw = new StreamWriter(target); foreach (var entry in _calibrationMap.OrderBy(x => x.Key)) sw.WriteLine($"{entry.Key},{string.Join(";", entry.Value)}"); }
-        public void LoadMap(string? path = null) { string target = path ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "keymap.csv"); if (!File.Exists(target)) return; try { _calibrationMap.Clear(); foreach (var line in File.ReadAllLines(target)) { var parts = line.Split(','); if (parts.Length < 2) continue; var keys = parts[1].Split(';').Where(s => !string.IsNullOrEmpty(s)).Select(int.Parse).ToList(); _calibrationMap[int.Parse(parts[0])] = keys; } } catch { } }
+
+        public void SaveMap(string? path = null)
+        {
+            try
+            {
+                string target = path ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "keymap.csv");
+                using (StreamWriter sw = new StreamWriter(target))
+                {
+                    foreach (var entry in _calibrationMap.OrderBy(x => x.Key))
+                        sw.WriteLine($"{entry.Key},{string.Join(";", entry.Value)}");
+                }
+
+                File.WriteAllText(_configPath, target);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"SaveMap Exception: {ex.Message}");
+            }
+        }
+
+        public void LoadMap(string? path = null)
+        {
+            try
+            {
+                string target = path ?? string.Empty;
+
+                if (string.IsNullOrEmpty(target))
+                {
+                    if (File.Exists(_configPath))
+                    {
+                        target = File.ReadAllText(_configPath).Trim();
+                    }
+                    else
+                    {
+                        target = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "keymap.csv");
+                    }
+                }
+
+                if (!File.Exists(target)) return;
+
+                _calibrationMap.Clear();
+                foreach (var line in File.ReadAllLines(target))
+                {
+                    var parts = line.Split(',');
+                    if (parts.Length < 2) continue;
+                    var keys = parts[1].Split(';').Where(s => !string.IsNullOrEmpty(s)).Select(int.Parse).ToList();
+                    _calibrationMap[int.Parse(parts[0])] = keys;
+                }
+
+                File.WriteAllText(_configPath, target);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"LoadMap Exception: {ex.Message}");
+            }
+        }
 
         private void RenderRainbow()
         {
@@ -341,21 +448,72 @@ namespace KeySharp
 
         private void RenderCalibrationFrame()
         {
-            _lampArray?.SetColor(WinUIColor.FromArgb(255, 0, 0, 0));
-            byte r = (byte)(255 * _globalBrightness);
-            _lampArray?.SetColorsForIndices(new[] { WinUIColor.FromArgb(255, r, 0, 0) }, new[] { _calibrationIndex });
+            if (_lampArray == null) return;
+
+            int count = _lampArray.LampCount;
+
+            if (_calibColorsCache.Length != count)
+            {
+                _calibColorsCache = new WinUIColor[count];
+                _calibIndicesCache = new int[count];
+                for (int i = 0; i < count; i++) _calibIndicesCache[i] = i;
+            }
+
+            for (int i = 0; i < count; i++)
+                _calibColorsCache[i] = WinUIColor.FromArgb(255, 0, 0, 0);
+
+            if (_calibrationIndex >= 0 && _calibrationIndex < count)
+            {
+                byte r = (byte)Math.Clamp(255 * _globalBrightness, 0, 255);
+                _calibColorsCache[_calibrationIndex] = WinUIColor.FromArgb(255, r, 0, 0);
+            }
+
+            _lampArray.SetColorsForIndices(_calibColorsCache, _calibIndicesCache);
         }
 
         private void UpdateHardwareColor()
         {
             try
             {
-                byte r = (byte)(_currentColor.R * _globalBrightness), g = (byte)(_currentColor.G * _globalBrightness), b = (byte)(_currentColor.B * _globalBrightness);
+                byte r = (byte)Math.Clamp(_currentColor.R * _globalBrightness, 0, 255);
+                byte g = (byte)Math.Clamp(_currentColor.G * _globalBrightness, 0, 255);
+                byte b = (byte)Math.Clamp(_currentColor.B * _globalBrightness, 0, 255);
                 _lampArray?.SetColor(WinUIColor.FromArgb(255, r, g, b));
             }
-            catch { /* Let the loop handle it */ }
+            catch { }
         }
 
-        private WinUIColor ColorFromHSV(double h, double s, double v) { int hi = (int)Math.Floor(h / 60) % 6; double f = h / 60 - Math.Floor(h / 60), p = v * (1 - s), q = v * (1 - f * s), t = v * (1 - (1 - f) * s); v *= 255; p *= 255; q *= 255; t *= 255; return hi switch { 0 => WinUIColor.FromArgb(255, (byte)v, (byte)t, (byte)p), 1 => WinUIColor.FromArgb(255, (byte)q, (byte)v, (byte)p), 2 => WinUIColor.FromArgb(255, (byte)p, (byte)v, (byte)t), 3 => WinUIColor.FromArgb(255, (byte)p, (byte)q, (byte)v), 4 => WinUIColor.FromArgb(255, (byte)t, (byte)p, (byte)v), _ => WinUIColor.FromArgb(255, (byte)v, (byte)p, (byte)q) }; }
+        private WinUIColor ColorFromHSV(double h, double s, double v)
+        {
+            try
+            {
+                int hi = (int)Math.Floor(h / 60) % 6;
+                if (hi < 0) hi += 6;
+                double f = h / 60 - Math.Floor(h / 60);
+                double p = v * (1 - s);
+                double q = v * (1 - f * s);
+                double t = v * (1 - (1 - f) * s);
+                v *= 255; p *= 255; q *= 255; t *= 255;
+
+                byte bv = (byte)Math.Clamp(v, 0, 255);
+                byte bt = (byte)Math.Clamp(t, 0, 255);
+                byte bp = (byte)Math.Clamp(p, 0, 255);
+                byte bq = (byte)Math.Clamp(q, 0, 255);
+
+                return hi switch
+                {
+                    0 => WinUIColor.FromArgb(255, bv, bt, bp),
+                    1 => WinUIColor.FromArgb(255, bq, bv, bp),
+                    2 => WinUIColor.FromArgb(255, bp, bv, bt),
+                    3 => WinUIColor.FromArgb(255, bp, bq, bv),
+                    4 => WinUIColor.FromArgb(255, bt, bp, bv),
+                    _ => WinUIColor.FromArgb(255, bv, bp, bq)
+                };
+            }
+            catch
+            {
+                return WinUIColor.FromArgb(255, 255, 0, 0);
+            }
+        }
     }
 }
