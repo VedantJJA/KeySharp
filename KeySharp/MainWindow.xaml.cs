@@ -540,5 +540,10 @@ namespace KeySharp
         }
 
         #endregion
+
+        private void ListBoxItem_Selected(object sender, RoutedEventArgs e)
+        {
+
+        }
     }
 }
