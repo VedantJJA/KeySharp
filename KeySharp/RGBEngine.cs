@@ -43,6 +43,9 @@ namespace KeySharp
         private WinUIColor _currentColor = WinUIColor.FromArgb(255, 0, 122, 255);
         private Random _rng = new Random();
 
+        // Lock to prevent overlapping COM/I2C commands which cause AccessViolationException in KernelBase.dll
+        private readonly object _hwLock = new object();
+
         // Audio Variables
         private WasapiLoopbackCapture? _capture;
         private float _audioThreshold = 0.5f;
@@ -74,6 +77,9 @@ namespace KeySharp
 
         private string _configPath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "last_map_config.txt");
 
+        // Fired when the LampArray is loaded so the UI can populate available zones dynamically
+        public Action? OnHardwareConnected;
+
         public async Task InitializeAsync()
         {
             try
@@ -95,12 +101,15 @@ namespace KeySharp
                 var devices = await DeviceInformation.FindAllAsync(selector);
                 if (devices.Count > 0)
                 {
-                    _lampArray = await LampArray.FromIdAsync(devices[0].Id);
-                    if (_lampArray != null)
+                    var newLamp = await LampArray.FromIdAsync(devices[0].Id);
+
+                    lock (_hwLock)
                     {
-                        _lampArray.SetColor(WinUIColor.FromArgb(255, 0, 0, 0));
-                        UpdateHardwareColor();
+                        _lampArray = newLamp;
+                        _lampArray?.SetColor(WinUIColor.FromArgb(255, 0, 0, 0));
                     }
+                    UpdateHardwareColor();
+                    OnHardwareConnected?.Invoke();
                 }
             }
             catch (Exception ex)
@@ -151,15 +160,16 @@ namespace KeySharp
                     }
                     catch { }
                 };
+
+                // Packaged apps can throw a 'Permission Denied' exception here if the manifest is missing 'microphone'
                 _capture.StartRecording();
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Audio Init Failed: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("Audio Init Failed. Check Manifest capabilities: " + ex.Message);
                 _capture = null;
             }
         }
-
         public void SetAudioThreshold(double val) => _audioThreshold = (float)(val / 100.0);
 
         private void TriggerRandomRipple()
@@ -209,7 +219,10 @@ namespace KeySharp
 
             try
             {
-                _lampArray?.SetColor(WinUIColor.FromArgb(255, 0, 0, 0));
+                lock (_hwLock)
+                {
+                    _lampArray?.SetColor(WinUIColor.FromArgb(255, 0, 0, 0));
+                }
                 if (mode == LightMode.Static) UpdateHardwareColor();
             }
             catch { }
@@ -237,7 +250,6 @@ namespace KeySharp
 
                 if (_currentMode == LightMode.MapTest)
                 {
-                    _lampArray.SetColor(WinUIColor.FromArgb(255, 0, 0, 0));
                     var testZones = _calibrationMap.Where(x => x.Value.Contains(vkCode)).Select(x => x.Key).ToArray();
                     if (testZones.Length > 0)
                     {
@@ -245,7 +257,12 @@ namespace KeySharp
                         byte bg = (byte)Math.Clamp(_currentColor.G * _globalBrightness, 0, 255);
                         byte bb = (byte)Math.Clamp(_currentColor.B * _globalBrightness, 0, 255);
                         WinUIColor bColor = WinUIColor.FromArgb(255, br, bg, bb);
-                        _lampArray.SetColorsForIndices(testZones.Select(_ => bColor).ToArray(), testZones);
+
+                        lock (_hwLock)
+                        {
+                            _lampArray?.SetColor(WinUIColor.FromArgb(255, 0, 0, 0));
+                            _lampArray?.SetColorsForIndices(testZones.Select(_ => bColor).ToArray(), testZones);
+                        }
                     }
                     return;
                 }
@@ -263,6 +280,61 @@ namespace KeySharp
                         WinUIColor waveBaseColor = (_currentMode == LightMode.PerKeyRipple) ? ColorFromHSV(_rng.Next(0, 360), 1, 1) : _currentColor;
                         _activeWaves.Add(new SequentialWave { Origin = zoneIndex, MaxSteps = _maxWaveSteps, Width = _rippleWidth, WaveColor = waveBaseColor, IsPerZoneRainbow = (_currentMode == LightMode.PerZoneRipple) });
                     }
+                }
+            }
+            catch { }
+        }
+
+        public int GetZoneCount()
+        {
+            return _lampArray?.LampCount ?? 0;
+        }
+
+        public void TriggerZoneRipple(int zoneIndex)
+        {
+            if (_lampArray == null) return;
+
+            try
+            {
+                lock (_wavesLock)
+                {
+                    WinUIColor waveBaseColor = (_currentMode == LightMode.PerKeyRipple) ? ColorFromHSV(_rng.Next(0, 360), 1, 1) : _currentColor;
+                    _activeWaves.Add(new SequentialWave
+                    {
+                        Origin = zoneIndex,
+                        MaxSteps = _maxWaveSteps,
+                        Width = _rippleWidth,
+                        WaveColor = waveBaseColor,
+                        IsPerZoneRainbow = (_currentMode == LightMode.PerZoneRipple)
+                    });
+                }
+            }
+            catch { }
+        }
+
+        // Dedicated Method for Charger connection Events
+        public void TriggerPowerRipple(int zoneIndex, bool isPluggedIn)
+        {
+            if (_lampArray == null) return;
+
+            try
+            {
+                lock (_wavesLock)
+                {
+                    // Target specific zone, or if -1 use the middle-most zone of the keyboard
+                    int targetZone = zoneIndex == -1 ? _lampArray.LampCount / 2 : zoneIndex;
+
+                    // Connected = Green, Disconnected = Red
+                    WinUIColor waveColor = isPluggedIn ? WinUIColor.FromArgb(255, 0, 255, 0) : WinUIColor.FromArgb(255, 255, 0, 0);
+
+                    _activeWaves.Add(new SequentialWave
+                    {
+                        Origin = targetZone,
+                        MaxSteps = _maxWaveSteps,
+                        Width = _rippleWidth,
+                        WaveColor = waveColor,
+                        IsPerZoneRainbow = false
+                    });
                 }
             }
             catch { }
@@ -302,7 +374,7 @@ namespace KeySharp
                 catch (Exception ex)
                 {
                     Console.WriteLine($"Hardware Write Error: {ex.Message}");
-                    _lampArray = null;
+                    // Do not nullify _lampArray on every exception or standard access violations will drop connection
                 }
             }
         }
@@ -365,13 +437,19 @@ namespace KeySharp
                 byte g = (byte)Math.Clamp(color.G * finalIntensity, 0, 255);
                 byte b = (byte)Math.Clamp(color.B * finalIntensity, 0, 255);
 
-                _lampArray!.SetColorsForIndices(new[] { WinUIColor.FromArgb(255, r, g, b) }, new[] { item.Key });
+                lock (_hwLock)
+                {
+                    _lampArray?.SetColorsForIndices(new[] { WinUIColor.FromArgb(255, r, g, b) }, new[] { item.Key });
+                }
 
                 _activeRipples[item.Key] -= 0.04;
                 if (_activeRipples[item.Key] <= 0)
                 {
                     _activeRipples.TryRemove(item.Key, out _);
-                    _lampArray!.SetColorsForIndices(new[] { WinUIColor.FromArgb(255, 0, 0, 0) }, new[] { item.Key });
+                    lock (_hwLock)
+                    {
+                        _lampArray?.SetColorsForIndices(new[] { WinUIColor.FromArgb(255, 0, 0, 0) }, new[] { item.Key });
+                    }
                 }
             }
         }
@@ -443,7 +521,11 @@ namespace KeySharp
             int[] indices = Enumerable.Range(0, count).ToArray();
             WinUIColor[] colors = indices.Select(i => ColorFromHSV((_rainbowHue + (i * 5)) % 360, 0.8, _globalBrightness)).ToArray();
             _rainbowHue = (_rainbowHue + 3) % 360;
-            _lampArray.SetColorsForIndices(colors, indices);
+
+            lock (_hwLock)
+            {
+                _lampArray?.SetColorsForIndices(colors, indices);
+            }
         }
 
         private void RenderCalibrationFrame()
@@ -468,7 +550,10 @@ namespace KeySharp
                 _calibColorsCache[_calibrationIndex] = WinUIColor.FromArgb(255, r, 0, 0);
             }
 
-            _lampArray.SetColorsForIndices(_calibColorsCache, _calibIndicesCache);
+            lock (_hwLock)
+            {
+                _lampArray?.SetColorsForIndices(_calibColorsCache, _calibIndicesCache);
+            }
         }
 
         private void UpdateHardwareColor()
@@ -478,7 +563,11 @@ namespace KeySharp
                 byte r = (byte)Math.Clamp(_currentColor.R * _globalBrightness, 0, 255);
                 byte g = (byte)Math.Clamp(_currentColor.G * _globalBrightness, 0, 255);
                 byte b = (byte)Math.Clamp(_currentColor.B * _globalBrightness, 0, 255);
-                _lampArray?.SetColor(WinUIColor.FromArgb(255, r, g, b));
+
+                lock (_hwLock)
+                {
+                    _lampArray?.SetColor(WinUIColor.FromArgb(255, r, g, b));
+                }
             }
             catch { }
         }

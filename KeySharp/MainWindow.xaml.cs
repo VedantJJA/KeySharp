@@ -23,6 +23,7 @@ namespace KeySharp
         private bool _isExplicitClose = false;
         private RGBEngine _engine;
         private bool _isLoaded = false;
+        private bool _isHandlingSelection = false;
 
         // Custom Color Picker Variables
         private double _currentH = 211; // Blue Hue
@@ -31,12 +32,29 @@ namespace KeySharp
         private bool _isUpdatingUI = false;
         private bool _isDraggingColor = false;
 
+        // Power Tracking Variable
+        private bool? _lastPowerState = null;
+
+        // Setup Carousel Variables
+        private int _currentSetupStep = 1;
+        private int _maxSetupSteps = 0;
+        private string _imagesBasePath = "";
+
         public MainWindow()
         {
             InitializeComponent();
 
             _engine = new RGBEngine();
             SetupTrayIcon();
+
+            // Wire up Hardware connection event to UI FIRST so it populates the dynamic zone count
+            _engine.OnHardwareConnected = () =>
+            {
+                Application.Current?.Dispatcher?.BeginInvoke(new Action(() =>
+                {
+                    PopulateZoneDropdown();
+                }));
+            };
 
             _ = _engine.InitializeAsync();
 
@@ -64,6 +82,9 @@ namespace KeySharp
                 catch (Exception ex) { Console.WriteLine($"Hook Primary Error: {ex.Message}"); }
             };
 
+            // Register Power Change Events
+            SystemEvents.PowerModeChanged += SystemEvents_PowerModeChanged;
+
             _isLoaded = true;
 
             // Initialize Custom Color Picker (Default Blue)
@@ -78,6 +99,13 @@ namespace KeySharp
 
             UpdateCalibrationUI();
             UpdateModeTitle();
+
+            // Run first time setup check
+            CheckFirstRun();
+
+            // Check initial power status
+            _lastPowerState = WinForms.SystemInformation.PowerStatus.PowerLineStatus == WinForms.PowerLineStatus.Online;
+            CheckPowerStatus(false);
         }
 
         protected override void OnPreviewKeyDown(KeyEventArgs e)
@@ -92,6 +120,232 @@ namespace KeySharp
             }
             catch { }
         }
+
+        #region Power Management
+
+        private void PopulateZoneDropdown()
+        {
+            if (ChargerZoneCombo == null) return;
+
+            int prevSelection = ChargerZoneCombo.SelectedIndex;
+            ChargerZoneCombo.Items.Clear();
+            ChargerZoneCombo.Items.Add(new ComboBoxItem { Content = "Middle" });
+
+            int count = _engine.GetZoneCount();
+            for (int i = 0; i < count; i++)
+            {
+                ChargerZoneCombo.Items.Add(new ComboBoxItem { Content = $"Zone {i}" });
+            }
+
+            ChargerZoneCombo.SelectedIndex = prevSelection >= 0 && prevSelection <= count ? prevSelection : 0;
+        }
+
+        private void SystemEvents_PowerModeChanged(object sender, PowerModeChangedEventArgs e)
+        {
+            if (e.Mode == PowerModes.StatusChange)
+            {
+                Application.Current.Dispatcher.Invoke(() => CheckPowerStatus(true));
+            }
+        }
+
+        private void CheckPowerStatus(bool triggerRipple)
+        {
+            try
+            {
+                bool isPluggedIn = WinForms.SystemInformation.PowerStatus.PowerLineStatus == WinForms.PowerLineStatus.Online;
+
+                // Handle battery turn-off toggle
+                if (OffOnBatteryToggle.IsChecked == true)
+                {
+                    _engine.SetBrightness(isPluggedIn ? SliderBrightness.Value : 0);
+                }
+                else
+                {
+                    _engine.SetBrightness(SliderBrightness.Value);
+                }
+
+                // Handle charger ripple effect toggle
+                if (triggerRipple && _lastPowerState != null && _lastPowerState != isPluggedIn)
+                {
+                    if (ChargerRippleToggle.IsChecked == true)
+                    {
+                        int selectedIdx = ChargerZoneCombo.SelectedIndex;
+                        int zone = selectedIdx <= 0 ? -1 : selectedIdx - 1; // 0 is Middle, >0 is Zone ID
+                        _engine.TriggerPowerRipple(zone, isPluggedIn);
+                    }
+                }
+
+                _lastPowerState = isPluggedIn;
+            }
+            catch { }
+        }
+
+        private void SettingsToggle_Changed(object sender, RoutedEventArgs e)
+        {
+            if (!_isLoaded) return;
+            CheckPowerStatus(false);
+        }
+
+        private void SettingsCombo_Changed(object sender, SelectionChangedEventArgs e)
+        {
+            // Just placeholder if you want immediate reaction, but it will read the index upon power change.
+        }
+
+        #endregion
+
+        #region Setup Carousel Logic
+
+        private void CheckFirstRun()
+        {
+            try
+            {
+                string appFolder = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "KeySharp");
+                if (!System.IO.Directory.Exists(appFolder)) System.IO.Directory.CreateDirectory(appFolder);
+                string flagFile = System.IO.Path.Combine(appFolder, "setup_complete.txt");
+
+                if (!System.IO.File.Exists(flagFile))
+                {
+                    if (WelcomeOverlay != null) WelcomeOverlay.Visibility = Visibility.Visible;
+                    if (MainContentPanel != null) MainContentPanel.Visibility = Visibility.Collapsed;
+                    if (SettingsContentPanel != null) SettingsContentPanel.Visibility = Visibility.Collapsed;
+                    if (ModeListBox != null) ModeListBox.IsEnabled = false;
+                    if (SettingsListBox != null) SettingsListBox.IsEnabled = false;
+
+                    // SMART PATH RESOLUTION FOR MSIX AND LOCAL DEPLOYMENTS
+                    string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+
+                    string[] possiblePaths = new string[]
+                    {
+                        System.IO.Path.Combine(baseDir, "Images"),       // Running locally inside WPF bin/Debug/Images
+                        System.IO.Path.Combine(baseDir, "..", "Images"), // MSIX Package root/Images (Wapproj mapped)
+                        baseDir,                                         // Running locally inside WPF bin/Debug root
+                        System.IO.Path.Combine(baseDir, "..")            // MSIX Package root
+                    };
+
+                    _imagesBasePath = "";
+                    bool imageExists = false;
+
+                    foreach (var path in possiblePaths)
+                    {
+                        string test = System.IO.Path.Combine(path, "1.png");
+                        if (System.IO.File.Exists(test))
+                        {
+                            _imagesBasePath = path;
+                            imageExists = true;
+                            break;
+                        }
+                    }
+
+                    _maxSetupSteps = 0;
+                    if (imageExists)
+                    {
+                        while (System.IO.File.Exists(System.IO.Path.Combine(_imagesBasePath, $"{_maxSetupSteps + 1}.png")))
+                        {
+                            _maxSetupSteps++;
+                        }
+                    }
+
+                    if (_maxSetupSteps == 0)
+                    {
+                        // No images found - fall back to Text mode
+                        _maxSetupSteps = 1;
+                        if (WelcomeFallbackText != null) WelcomeFallbackText.Visibility = Visibility.Visible;
+                        if (SetupImage != null) SetupImage.Visibility = Visibility.Collapsed;
+                    }
+                    else
+                    {
+                        // Images found - Show Carousel
+                        if (WelcomeFallbackText != null) WelcomeFallbackText.Visibility = Visibility.Collapsed;
+                        if (SetupImage != null) SetupImage.Visibility = Visibility.Visible;
+                        LoadSetupImage(_currentSetupStep);
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private void LoadSetupImage(int step)
+        {
+            try
+            {
+                string imgPath = System.IO.Path.Combine(_imagesBasePath, $"{step}.png");
+                if (System.IO.File.Exists(imgPath) && SetupImage != null)
+                {
+                    var bitmap = new System.Windows.Media.Imaging.BitmapImage();
+                    bitmap.BeginInit();
+                    bitmap.UriSource = new Uri(imgPath, UriKind.Absolute);
+                    bitmap.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                    bitmap.EndInit();
+                    SetupImage.Source = bitmap;
+                }
+
+                if (SetupPrevBtn != null)
+                {
+                    SetupPrevBtn.IsEnabled = step > 1;
+                }
+
+                if (SetupNextBtn != null)
+                {
+                    if (step >= _maxSetupSteps)
+                    {
+                        SetupNextBtn.Content = "Finish";
+                    }
+                    else
+                    {
+                        SetupNextBtn.Content = ">";
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private void SetupPrev_Click(object sender, RoutedEventArgs e)
+        {
+            if (_currentSetupStep > 1)
+            {
+                _currentSetupStep--;
+                LoadSetupImage(_currentSetupStep);
+            }
+        }
+
+        private void SetupNext_Click(object sender, RoutedEventArgs e)
+        {
+            if (_currentSetupStep < _maxSetupSteps)
+            {
+                _currentSetupStep++;
+                LoadSetupImage(_currentSetupStep);
+            }
+            else
+            {
+                GetStarted_Click(sender, e);
+            }
+        }
+
+        private void SetupSkip_Click(object sender, RoutedEventArgs e)
+        {
+            GetStarted_Click(sender, e);
+        }
+
+        private void GetStarted_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                string appFolder = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "KeySharp");
+                string flagFile = System.IO.Path.Combine(appFolder, "setup_complete.txt");
+                System.IO.File.WriteAllText(flagFile, "done");
+
+                if (WelcomeOverlay != null) WelcomeOverlay.Visibility = Visibility.Collapsed;
+                if (MainContentPanel != null) MainContentPanel.Visibility = Visibility.Visible;
+                if (ModeListBox != null) ModeListBox.IsEnabled = true;
+                if (SettingsListBox != null) SettingsListBox.IsEnabled = true;
+
+                if (ModeListBox != null && ModeListBox.SelectedIndex == -1)
+                    ModeListBox.SelectedIndex = 0;
+            }
+            catch { }
+        }
+
+        #endregion
 
         #region System Tray Logic
 
@@ -142,6 +396,7 @@ namespace KeySharp
             {
                 try
                 {
+                    SystemEvents.PowerModeChanged -= SystemEvents_PowerModeChanged; // Clean up hook
                     if (_trayIcon != null)
                     {
                         _trayIcon.Visible = false;
@@ -171,12 +426,19 @@ namespace KeySharp
 
         private void ModeListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            if (!_isLoaded || ModeListBox == null || _engine == null) return;
+            if (!_isLoaded || ModeListBox == null || _engine == null || _isHandlingSelection) return;
 
             try
             {
                 int idx = ModeListBox.SelectedIndex;
                 if (idx < 0) return;
+
+                _isHandlingSelection = true;
+                if (SettingsListBox != null) SettingsListBox.SelectedIndex = -1;
+                _isHandlingSelection = false;
+
+                if (MainContentPanel != null) MainContentPanel.Visibility = Visibility.Visible;
+                if (SettingsContentPanel != null) SettingsContentPanel.Visibility = Visibility.Collapsed;
 
                 _engine.SetMode((LightMode)idx);
                 UpdateModeTitle();
@@ -194,6 +456,23 @@ namespace KeySharp
                     CalibrationPanel.Visibility = (idx == 6) ? Visibility.Visible : Visibility.Collapsed;
             }
             catch (Exception ex) { Console.WriteLine($"Selection Change Error: {ex.Message}"); }
+        }
+
+        private void SettingsListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (!_isLoaded || SettingsListBox == null || _isHandlingSelection) return;
+            if (SettingsListBox.SelectedIndex < 0) return;
+
+            try
+            {
+                _isHandlingSelection = true;
+                if (ModeListBox != null) ModeListBox.SelectedIndex = -1;
+                _isHandlingSelection = false;
+
+                if (MainContentPanel != null) MainContentPanel.Visibility = Visibility.Collapsed;
+                if (SettingsContentPanel != null) SettingsContentPanel.Visibility = Visibility.Visible;
+            }
+            catch (Exception ex) { Console.WriteLine($"Settings Selection Error: {ex.Message}"); }
         }
 
         private void UpdateModeTitle()
@@ -540,10 +819,5 @@ namespace KeySharp
         }
 
         #endregion
-
-        private void ListBoxItem_Selected(object sender, RoutedEventArgs e)
-        {
-
-        }
     }
 }
