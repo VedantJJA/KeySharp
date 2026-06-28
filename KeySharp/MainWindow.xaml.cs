@@ -1009,6 +1009,33 @@ namespace KeySharp
             }
         }
 
+        private void RestartTour_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                string appFolder = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "KeySharp");
+                string flagFile = System.IO.Path.Combine(appFolder, "setup_complete.txt");
+                if (System.IO.File.Exists(flagFile))
+                {
+                    System.IO.File.Delete(flagFile);
+                }
+
+                if (WelcomeOverlay != null) WelcomeOverlay.Visibility = Visibility.Visible;
+                if (MainContentPanel != null) MainContentPanel.Visibility = Visibility.Collapsed;
+                if (SettingsContentPanel != null) SettingsContentPanel.Visibility = Visibility.Collapsed;
+                if (ModeListBox != null) ModeListBox.IsEnabled = false;
+                if (SettingsListBox != null) SettingsListBox.IsEnabled = false;
+
+                _maxSetupSteps = 5;
+                _currentSetupStep = 1;
+                LoadTourStep(_currentSetupStep);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Could not start tour: {ex.Message}", "Tour Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
         #endregion
 
         #region Custom Color Picker Logic

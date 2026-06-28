@@ -301,9 +301,16 @@
                                 <ui:ToggleSwitch x:Name="AutoStartToggle" Content="Launch KeySharp on Windows Startup" Margin="0,0,0,8" Checked="AutoStartToggle_Changed" Unchecked="AutoStartToggle_Changed"/>
 
                                 <!-- Dynamic Lighting Priority Button -->
-                                <ui:Button x:Name="ManagePriorityBtn" Content="Windows Dynamic Lighting Settings" Click="ManagePriority_Click" Appearance="Secondary" HorizontalAlignment="Stretch" Padding="8,6" FontSize="12" Margin="0,0,0,4">
+                                <ui:Button x:Name="ManagePriorityBtn" Content="Windows Dynamic Lighting Settings" Click="ManagePriority_Click" Appearance="Secondary" HorizontalAlignment="Stretch" Padding="8,6" FontSize="12" Margin="0,0,0,8">
                                     <ui:Button.Icon>
                                         <ui:SymbolIcon Symbol="Settings24"/>
+                                    </ui:Button.Icon>
+                                </ui:Button>
+
+                                <!-- Manual Setup Tour Button -->
+                                <ui:Button Content="Restart Quick Start Tour" Click="RestartTour_Click" Appearance="Secondary" HorizontalAlignment="Stretch" Padding="8,6" FontSize="12" Margin="0,0,0,4">
+                                    <ui:Button.Icon>
+                                        <ui:SymbolIcon Symbol="BookQuestionMark24"/>
                                     </ui:Button.Icon>
                                 </ui:Button>
                             </StackPanel>
