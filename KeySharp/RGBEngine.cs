@@ -48,15 +48,27 @@ namespace KeySharp
 
         // Audio Variables
         private WasapiLoopbackCapture? _capture;
-        private float _audioThreshold = 0.5f;
+        private float _beatThreshold = 0.1f;
+        private float _minThresholdFloor = 0.5f;
+        private float _recentMaxVolume = 0.01f;
         private int _lastRippleOrigin = -1;
         private DateTime _lastBeatTime = DateTime.Now;
+        private int _maxConcurrentWaves = 4;
+
+        // Device Properties
+        private string _connectedDeviceName = "None Detected";
+        public string ConnectedDeviceName => _connectedDeviceName;
+
+        // Settings State
+        private bool _isSettingsActive = false;
 
         // Animation & Thread Variables
         private CancellationTokenSource _cts = new CancellationTokenSource();
         private bool _isReconnecting = false;
         private double _rainbowHue = 0;
         private double _rainbowSpread = 5;
+        private int _rainbowSpeedMs = 20;
+        private DateTime _lastRainbowFrame = DateTime.Now;
         private int _waveSpeedMs = 20;
         private int _maxWaveSteps = 5;
         private int _rippleWidth = 1;
@@ -82,6 +94,7 @@ namespace KeySharp
 
         // Fired when the LampArray is loaded so the UI can populate available zones dynamically
         public Action? OnHardwareConnected;
+        public Action? OnDeviceNotFound;
 
         public async Task InitializeAsync()
         {
@@ -111,8 +124,14 @@ namespace KeySharp
                         _lampArray = newLamp;
                         _lampArray?.SetColor(WinUIColor.FromArgb(255, 0, 0, 0));
                     }
+                    _connectedDeviceName = devices[0].Name;
                     UpdateHardwareColor();
                     OnHardwareConnected?.Invoke();
+                }
+                else
+                {
+                    _connectedDeviceName = "None Detected";
+                    OnDeviceNotFound?.Invoke();
                 }
             }
             catch (Exception ex)
@@ -155,10 +174,25 @@ namespace KeySharp
                             if (sample > max) max = sample;
                         }
 
-                        if (max > _audioThreshold && (DateTime.Now - _lastBeatTime).TotalMilliseconds > 150)
+                        // Update running maximum volume over last few seconds
+                        _recentMaxVolume = Math.Max(max, _recentMaxVolume * 0.995f);
+                        if (_recentMaxVolume < 0.01f) _recentMaxVolume = 0.01f;
+
+                        // Normalize peak against the recent peak level
+                        float normMax = max / _recentMaxVolume;
+
+                        // Onset Envelope Beat trigger: if normalized peak exceeds threshold, trigger beat
+                        if (normMax > _beatThreshold && (DateTime.Now - _lastBeatTime).TotalMilliseconds > 200)
                         {
                             TriggerRandomRipple();
                             _lastBeatTime = DateTime.Now;
+                            // Set threshold to peak level (with a small buffer) to prevent immediate triggers
+                            _beatThreshold = normMax * 1.05f;
+                        }
+                        else
+                        {
+                            // Exponential decay of beat threshold down to minimum floor
+                            _beatThreshold = Math.Max(_beatThreshold * 0.95f, _minThresholdFloor);
                         }
                     }
                     catch { }
@@ -173,7 +207,15 @@ namespace KeySharp
                 _capture = null;
             }
         }
-        public void SetAudioThreshold(double val) => _audioThreshold = (float)(val / 100.0);
+        // Slider 1-100 maps to minimum floor threshold of 0.01 to 1.0
+        public void SetBeatSensitivity(double val)
+        {
+            _minThresholdFloor = (float)(val / 100.0);
+            if (_beatThreshold < _minThresholdFloor)
+            {
+                _beatThreshold = _minThresholdFloor;
+            }
+        }
 
         private void TriggerRandomRipple()
         {
@@ -183,6 +225,12 @@ namespace KeySharp
 
             try
             {
+                // Limit concurrent waves to prevent light clutter
+                lock (_wavesLock)
+                {
+                    if (_activeWaves.Count >= _maxConcurrentWaves) return;
+                }
+
                 int newOrigin;
                 int attempts = 0;
                 do
@@ -237,6 +285,29 @@ namespace KeySharp
         public void SetRippleWidth(int width) => _rippleWidth = width;
         public void SetSpeed(int ms) => _waveSpeedMs = ms;
         public void SetRainbowSpread(double val) => _rainbowSpread = val;
+        public void SetRainbowSpeed(int ms) => _rainbowSpeedMs = ms;
+        public void SetSettingsActive(bool active)
+        {
+            _isSettingsActive = active;
+            if (active && _currentMode != LightMode.Calibration && _currentMode != LightMode.MapTest)
+            {
+                try
+                {
+                    lock (_hwLock)
+                    {
+                        _lampArray?.SetColor(WinUIColor.FromArgb(255, 0, 0, 0));
+                    }
+                }
+                catch { }
+            }
+            else if (!active)
+            {
+                if (_currentMode == LightMode.Static)
+                {
+                    UpdateHardwareColor();
+                }
+            }
+        }
         public void SetColor(byte r, byte g, byte b) { _currentColor = WinUIColor.FromArgb(255, r, g, b); if (_currentMode == LightMode.Static) UpdateHardwareColor(); }
 
         public void TriggerKeyPress(int vkCode)
@@ -361,7 +432,25 @@ namespace KeySharp
                         continue;
                     }
 
-                    if (_currentMode == LightMode.RainbowWave) RenderRainbow();
+                    // If Settings view is active, turn lights off unless we're in map test or calibration
+                    if (_isSettingsActive && _currentMode != LightMode.Calibration && _currentMode != LightMode.MapTest)
+                    {
+                        lock (_hwLock)
+                        {
+                            _lampArray?.SetColor(WinUIColor.FromArgb(255, 0, 0, 0));
+                        }
+                        await Task.Delay(50, token);
+                        continue;
+                    }
+
+                    if (_currentMode == LightMode.RainbowWave)
+                    {
+                        if ((DateTime.Now - _lastRainbowFrame).TotalMilliseconds >= _rainbowSpeedMs)
+                        {
+                            RenderRainbow();
+                            _lastRainbowFrame = DateTime.Now;
+                        }
+                    }
                     if (_currentMode >= LightMode.FixedRipple && _currentMode <= LightMode.MusicSync)
                     {
                         ProcessSequentialWaves();
@@ -369,7 +458,8 @@ namespace KeySharp
                     }
                     if (_currentMode == LightMode.Calibration) RenderCalibrationFrame();
 
-                    await Task.Delay(20, token);
+                    // Use minimum delay of 5ms for responsive rendering
+                    await Task.Delay(5, token);
                 }
                 catch (TaskCanceledException)
                 {
@@ -544,7 +634,7 @@ namespace KeySharp
         {
             int count = _lampArray!.LampCount;
             int[] indices = Enumerable.Range(0, count).ToArray();
-            WinUIColor[] colors = indices.Select(i => ColorFromHSV((_rainbowHue + (i * _rainbowSpread)) % 360, 0.8, _globalBrightness)).ToArray();
+            WinUIColor[] colors = indices.Select(i => ColorFromHSV((_rainbowHue + (i * _rainbowSpread)) % 360, 1.0, _globalBrightness)).ToArray();
             _rainbowHue = (_rainbowHue + 3) % 360;
 
             lock (_hwLock)
@@ -583,6 +673,8 @@ namespace KeySharp
 
         private void UpdateHardwareColor()
         {
+            if (_isSettingsActive && _currentMode != LightMode.Calibration && _currentMode != LightMode.MapTest) return;
+
             try
             {
                 byte r = (byte)Math.Clamp(_currentColor.R * _globalBrightness, 0, 255);

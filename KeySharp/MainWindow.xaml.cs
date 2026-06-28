@@ -43,10 +43,17 @@ namespace KeySharp
         private const string AutoStartRegistryKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
         private const string AutoStartValueName = "KeySharp Pro";
 
+        // Device Connection check flag
+        private bool _hasShownDeviceNotFoundPopup = false;
+
+        private string PriorityAlertedPath => System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "KeySharp",
+            "priority_alerted.txt");
+
         // Setup Carousel Variables
         private int _currentSetupStep = 1;
         private int _maxSetupSteps = 0;
-        private string _imagesBasePath = "";
 
         public MainWindow()
         {
@@ -61,6 +68,28 @@ namespace KeySharp
                 Application.Current?.Dispatcher?.BeginInvoke(new Action(() =>
                 {
                     PopulateZoneDropdown();
+                    if (DeviceStatusText != null)
+                    {
+                        DeviceStatusText.Text = _engine.ConnectedDeviceName;
+                        DeviceStatusText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.Green);
+                    }
+                }));
+            };
+
+            _engine.OnDeviceNotFound = () =>
+            {
+                Application.Current?.Dispatcher?.BeginInvoke(new Action(() =>
+                {
+                    if (DeviceStatusText != null)
+                    {
+                        DeviceStatusText.Text = "None Detected";
+                        DeviceStatusText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.Red);
+                    }
+                    if (!_hasShownDeviceNotFoundPopup)
+                    {
+                        _hasShownDeviceNotFoundPopup = true;
+                        MessageBox.Show("No supported RGB keyboard detected. Please ensure your device is connected and supports Windows Dynamic Lighting.", "Device Not Found", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    }
                 }));
             };
 
@@ -111,6 +140,9 @@ namespace KeySharp
 
             // Initialize auto-start toggle from registry
             InitializeAutoStartToggle();
+
+            // Check if KeySharp has top priority in Windows Dynamic Lighting settings (Handled by the interactive tour now)
+            // CheckDynamicLightingPriority();
 
             // Run first time setup check
             CheckFirstRun();
@@ -223,92 +255,194 @@ namespace KeySharp
                     if (ModeListBox != null) ModeListBox.IsEnabled = false;
                     if (SettingsListBox != null) SettingsListBox.IsEnabled = false;
 
-                    // SMART PATH RESOLUTION FOR MSIX AND LOCAL DEPLOYMENTS
-                    string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-
-                    string[] possiblePaths = new string[]
+                    _maxSetupSteps = 5;
+                    _currentSetupStep = 1;
+                    
+                    // Delay slightly to ensure layout and controls render before calculating coordinates
+                    Application.Current?.Dispatcher?.BeginInvoke(new Action(() =>
                     {
-                        System.IO.Path.Combine(baseDir, "Images"),       // Running locally inside WPF bin/Debug/Images
-                        System.IO.Path.Combine(baseDir, "..", "Images"), // MSIX Package root/Images (Wapproj mapped)
-                        baseDir,                                         // Running locally inside WPF bin/Debug root
-                        System.IO.Path.Combine(baseDir, "..")            // MSIX Package root
-                    };
-
-                    _imagesBasePath = "";
-                    bool imageExists = false;
-
-                    foreach (var path in possiblePaths)
-                    {
-                        string test = System.IO.Path.Combine(path, "1.png");
-                        if (System.IO.File.Exists(test))
-                        {
-                            _imagesBasePath = path;
-                            imageExists = true;
-                            break;
-                        }
-                    }
-
-                    _maxSetupSteps = 0;
-                    if (imageExists)
-                    {
-                        while (System.IO.File.Exists(System.IO.Path.Combine(_imagesBasePath, $"{_maxSetupSteps + 1}.png")))
-                        {
-                            _maxSetupSteps++;
-                        }
-                    }
-
-                    if (_maxSetupSteps == 0)
-                    {
-                        // No images found - fall back to Text mode
-                        _maxSetupSteps = 1;
-                        if (WelcomeFallbackText != null) WelcomeFallbackText.Visibility = Visibility.Visible;
-                        if (SetupImage != null) SetupImage.Visibility = Visibility.Collapsed;
-                    }
-                    else
-                    {
-                        // Images found - Show Carousel
-                        if (WelcomeFallbackText != null) WelcomeFallbackText.Visibility = Visibility.Collapsed;
-                        if (SetupImage != null) SetupImage.Visibility = Visibility.Visible;
-                        LoadSetupImage(_currentSetupStep);
-                    }
+                        LoadTourStep(_currentSetupStep);
+                    }), System.Windows.Threading.DispatcherPriority.Background);
                 }
             }
             catch { }
         }
 
-        private void LoadSetupImage(int step)
+        private void LoadTourStep(int step)
         {
             try
             {
-                string imgPath = System.IO.Path.Combine(_imagesBasePath, $"{step}.png");
-                if (System.IO.File.Exists(imgPath) && SetupImage != null)
+                if (WelcomeOverlay == null || TourTitle == null || TourDescription == null || TourIcon == null || TourActionButton == null || TourHighlight == null || TourBubble == null) return;
+
+                FrameworkElement? target = null;
+                string title = "";
+                string desc = "";
+                string nextText = "Next >";
+                bool showActionBtn = false;
+                string actionText = "";
+
+                // Reset sidebar selection if moving away from settings steps
+                if (step <= 2)
                 {
-                    var bitmap = new System.Windows.Media.Imaging.BitmapImage();
-                    bitmap.BeginInit();
-                    bitmap.UriSource = new Uri(imgPath, UriKind.Absolute);
-                    bitmap.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
-                    bitmap.EndInit();
-                    SetupImage.Source = bitmap;
+                    if (SettingsListBox != null && SettingsListBox.SelectedIndex != -1)
+                    {
+                        _isHandlingSelection = true;
+                        SettingsListBox.SelectedIndex = -1;
+                        _isHandlingSelection = false;
+                    }
+                    if (ModeListBox != null && ModeListBox.SelectedIndex == -1)
+                    {
+                        _isHandlingSelection = true;
+                        ModeListBox.SelectedIndex = 0;
+                        _isHandlingSelection = false;
+                    }
+
+                    // Reset main panels
+                    if (MainContentPanel != null) MainContentPanel.Visibility = Visibility.Visible;
+                    if (SettingsContentPanel != null) SettingsContentPanel.Visibility = Visibility.Collapsed;
                 }
 
-                if (SetupPrevBtn != null)
+                switch (step)
                 {
-                    SetupPrevBtn.IsEnabled = step > 1;
+                    case 1:
+                        target = ModeListBox;
+                        TourIcon.Symbol = Wpf.Ui.Controls.SymbolRegular.PaintBrush24;
+                        TourIcon.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#00FFCC"));
+                        title = "1. Select Lighting Effect";
+                        desc = "Select a lighting mode from the sidebar: choose Static colors, Rainbow Waves, keypress Ripples, or Music Sync.";
+                        break;
+
+                    case 2:
+                        target = SettingsListBox;
+                        TourIcon.Symbol = Wpf.Ui.Controls.SymbolRegular.Settings24;
+                        TourIcon.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#A0A0A0"));
+                        title = "2. Open App Settings";
+                        desc = "Configuration toggles, priority control, and keyboard mapping can be found under the Settings tab.";
+                        break;
+
+                    case 3:
+                        // Make sure we show Settings tab and main settings card
+                        _isHandlingSelection = true;
+                        if (SettingsListBox != null) SettingsListBox.SelectedIndex = 0;
+                        if (ModeListBox != null) ModeListBox.SelectedIndex = -1;
+                        _isHandlingSelection = false;
+
+                        _settingsToolMode = null;
+                        _engine.SetSettingsActive(true);
+                        _engine.SetMode(LightMode.Static);
+
+                        if (SettingsContentPanel != null) SettingsContentPanel.Visibility = Visibility.Visible;
+                        if (MainContentPanel != null) MainContentPanel.Visibility = Visibility.Collapsed;
+                        if (SettingsMainView != null) SettingsMainView.Visibility = Visibility.Visible;
+                        if (SettingsCalibrationView != null) SettingsCalibrationView.Visibility = Visibility.Collapsed;
+                        if (SettingsMapTestView != null) SettingsMapTestView.Visibility = Visibility.Collapsed;
+
+                        target = ManagePriorityBtn;
+                        TourIcon.Symbol = Wpf.Ui.Controls.SymbolRegular.Important24;
+                        TourIcon.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#FFCC00"));
+                        title = "3. Lighting Priority";
+                        desc = "Windows manages light control priority. If default vendor apps (like Razer or Legion) override KeySharp, click the button below to open Windows Settings and drag KeySharp to the top of the Background control list.";
+                        showActionBtn = true;
+                        actionText = "Open Windows Settings";
+                        break;
+
+                    case 4:
+                        // Make sure we are on the settings main view
+                        if (SettingsMainView != null && SettingsMainView.Visibility != Visibility.Visible)
+                        {
+                            SettingsMainView.Visibility = Visibility.Visible;
+                            SettingsCalibrationView.Visibility = Visibility.Collapsed;
+                        }
+
+                        target = OpenCalibrationBtn;
+                        TourIcon.Symbol = Wpf.Ui.Controls.SymbolRegular.Wrench24;
+                        TourIcon.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#007AFF"));
+                        title = "4. Map Keyboard Zones";
+                        desc = "To make keypress ripples and lighting waves match your hardware keys layout, click this button to open the zone mapping tool.";
+                        showActionBtn = true;
+                        actionText = "Start Calibration Utility";
+                        break;
+
+                    case 5:
+                        // Trigger open calibration subview programmatically
+                        if (_settingsToolMode != LightMode.Calibration)
+                        {
+                            _settingsToolMode = LightMode.Calibration;
+                            _engine.SetSettingsActive(false);
+                            _engine.SetMode(LightMode.Calibration);
+                            UpdateCalibrationUI();
+
+                            if (SettingsMainView != null) SettingsMainView.Visibility = Visibility.Collapsed;
+                            if (SettingsCalibrationView != null) SettingsCalibrationView.Visibility = Visibility.Visible;
+                        }
+
+                        target = SettingsCalibrationView;
+                        TourIcon.Symbol = Wpf.Ui.Controls.SymbolRegular.Save24;
+                        TourIcon.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#34C759"));
+                        title = "5. Calibration & Auto-Save";
+                        desc = "Tap any key on your keyboard to register it to the active zone. Use Prev/Next to loop zones, and click 'Save Map' when finished to save your layout permanently.";
+                        nextText = "Finish";
+                        break;
                 }
 
-                if (SetupNextBtn != null)
+                // Position relative to target
+                if (target != null)
                 {
-                    if (step >= _maxSetupSteps)
+                    target.UpdateLayout();
+                    Point point = target.TranslatePoint(new Point(0, 0), WelcomeOverlay);
+
+                    // Update Highlight box
+                    TourHighlight.Visibility = Visibility.Visible;
+                    TourHighlight.Width = target.ActualWidth + 8;
+                    TourHighlight.Height = target.ActualHeight + 8;
+                    TourHighlight.Margin = new Thickness(point.X - 4, point.Y - 4, 0, 0);
+
+                    // Position Tour Bubble next to target
+                    double bubbleX = point.X + target.ActualWidth + 20;
+                    double bubbleY = point.Y;
+
+                    // If bubble goes out of right window bounds, place it to the left of the target instead
+                    if (bubbleX + TourBubble.Width > WelcomeOverlay.ActualWidth)
                     {
-                        SetupNextBtn.Content = "Finish";
+                        bubbleX = point.X - TourBubble.Width - 20;
                     }
-                    else
+
+                    // Constrain Y position within window bounds
+                    double bubbleHeight = TourBubble.ActualHeight > 0 ? TourBubble.ActualHeight : 200;
+                    if (bubbleY + bubbleHeight > WelcomeOverlay.ActualHeight)
                     {
-                        SetupNextBtn.Content = ">";
+                        bubbleY = WelcomeOverlay.ActualHeight - bubbleHeight - 20;
                     }
+
+                    if (bubbleX < 10) bubbleX = 10;
+                    if (bubbleY < 10) bubbleY = 10;
+
+                    TourBubble.HorizontalAlignment = HorizontalAlignment.Left;
+                    TourBubble.VerticalAlignment = VerticalAlignment.Top;
+                    TourBubble.Margin = new Thickness(bubbleX, bubbleY, 0, 0);
                 }
+                else
+                {
+                    TourHighlight.Visibility = Visibility.Collapsed;
+                    TourBubble.HorizontalAlignment = HorizontalAlignment.Center;
+                    TourBubble.VerticalAlignment = VerticalAlignment.Center;
+                    TourBubble.Margin = new Thickness(0);
+                }
+
+                // Update text elements
+                TourTitle.Text = title;
+                TourDescription.Text = desc;
+                if (TourStepCounter != null) TourStepCounter.Text = $"{step}/5";
+                if (SetupPrevBtn != null) SetupPrevBtn.IsEnabled = step > 1;
+                if (SetupNextBtn != null) SetupNextBtn.Content = nextText;
+
+                TourActionButton.Visibility = showActionBtn ? Visibility.Visible : Visibility.Collapsed;
+                TourActionButton.Content = actionText;
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Tour step error: {ex.Message}");
+            }
         }
 
         private void SetupPrev_Click(object sender, RoutedEventArgs e)
@@ -316,7 +450,7 @@ namespace KeySharp
             if (_currentSetupStep > 1)
             {
                 _currentSetupStep--;
-                LoadSetupImage(_currentSetupStep);
+                LoadTourStep(_currentSetupStep);
             }
         }
 
@@ -325,7 +459,7 @@ namespace KeySharp
             if (_currentSetupStep < _maxSetupSteps)
             {
                 _currentSetupStep++;
-                LoadSetupImage(_currentSetupStep);
+                LoadTourStep(_currentSetupStep);
             }
             else
             {
@@ -338,7 +472,36 @@ namespace KeySharp
             GetStarted_Click(sender, e);
         }
 
-        private void GetStarted_Click(object sender, RoutedEventArgs e)
+        private void TourActionButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (_currentSetupStep == 3)
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:personalization-lighting") { UseShellExecute = true });
+                }
+                else if (_currentSetupStep == 4)
+                {
+                    // Move to Step 5 programmatically (which loads calibration utility)
+                    _currentSetupStep = 5;
+                    LoadTourStep(_currentSetupStep);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Tour Action Error: {ex.Message}");
+            }
+        }
+
+        private void WelcomeOverlay_SizeChanged(object sender, SizeChangedEventArgs e)
+        {
+            if (WelcomeOverlay != null && WelcomeOverlay.Visibility == Visibility.Visible)
+            {
+                LoadTourStep(_currentSetupStep);
+            }
+        }
+
+        private void GetStarted_Click(object? sender, RoutedEventArgs? e)
         {
             try
             {
@@ -351,12 +514,17 @@ namespace KeySharp
                 if (ModeListBox != null) ModeListBox.IsEnabled = true;
                 if (SettingsListBox != null) SettingsListBox.IsEnabled = true;
 
+                // Return to settings main view when closing tour
+                _settingsToolMode = null;
+                _engine.SetSettingsActive(false);
+                if (SettingsMainView != null) SettingsMainView.Visibility = Visibility.Visible;
+                if (SettingsCalibrationView != null) SettingsCalibrationView.Visibility = Visibility.Collapsed;
+
                 if (ModeListBox != null && ModeListBox.SelectedIndex == -1)
                     ModeListBox.SelectedIndex = 0;
             }
             catch { }
         }
-
         #endregion
 
         #region System Tray Logic
@@ -366,10 +534,31 @@ namespace KeySharp
             try
             {
                 _trayIcon = new WinForms.NotifyIcon();
-                _trayIcon.Icon = System.Drawing.SystemIcons.Application;
                 _trayIcon.Text = "KeySharp Pro";
                 _trayIcon.Visible = true;
                 _trayIcon.DoubleClick += (s, e) => RestoreWindow();
+
+                // Load high-quality tray icon from app.png resource
+                try
+                {
+                    var iconUri = new Uri("pack://application:,,,/Images/app.png");
+                    var iconStream = Application.GetResourceStream(iconUri)?.Stream;
+                    if (iconStream != null)
+                    {
+                        using (var bitmap = new System.Drawing.Bitmap(iconStream))
+                        {
+                            _trayIcon.Icon = System.Drawing.Icon.FromHandle(bitmap.GetHicon());
+                        }
+                    }
+                    else
+                    {
+                        _trayIcon.Icon = System.Drawing.SystemIcons.Application;
+                    }
+                }
+                catch
+                {
+                    _trayIcon.Icon = System.Drawing.SystemIcons.Application;
+                }
 
                 var contextMenu = new WinForms.ContextMenuStrip();
 
@@ -393,8 +582,32 @@ namespace KeySharp
                 this.Show();
                 this.WindowState = WindowState.Normal;
                 this.Activate();
+
+                // Re-enable settings blackout only if settings tab is active
+                if (SettingsListBox != null && SettingsListBox.SelectedIndex == 0)
+                {
+                    _engine.SetSettingsActive(true);
+                }
             }
             catch { }
+        }
+
+        protected override void OnStateChanged(EventArgs e)
+        {
+            base.OnStateChanged(e);
+            if (this.WindowState == WindowState.Minimized)
+            {
+                // Temporarily disable settings blackout so mode continues running in background
+                _engine.SetSettingsActive(false);
+            }
+            else if (this.WindowState == WindowState.Normal)
+            {
+                // Re-enable settings blackout only if settings tab is active
+                if (SettingsListBox != null && SettingsListBox.SelectedIndex == 0)
+                {
+                    _engine.SetSettingsActive(true);
+                }
+            }
         }
 
         protected override void OnClosing(CancelEventArgs e)
@@ -403,6 +616,8 @@ namespace KeySharp
             {
                 e.Cancel = true;
                 this.Hide();
+                // Temporarily disable settings blackout so mode continues running in background
+                _engine.SetSettingsActive(false);
             }
             else
             {
@@ -455,19 +670,19 @@ namespace KeySharp
                 if (MainContentPanel != null) MainContentPanel.Visibility = Visibility.Visible;
                 if (SettingsContentPanel != null) SettingsContentPanel.Visibility = Visibility.Collapsed;
 
-                // Map sidebar indices to LightMode: 0=Static, 1=RainbowWave, 2=FixedRipple, 3=PerZoneRipple, 4=PerKeyRipple, 5=MusicSync
+                // Map sidebar indices to LightMode: 0=Static, 1=RainbowWave, 2=Ripple (sub-type from combo), 3=MusicSync
                 LightMode mode;
                 switch (idx)
                 {
                     case 0: mode = LightMode.Static; break;
                     case 1: mode = LightMode.RainbowWave; break;
-                    case 2: mode = LightMode.FixedRipple; break;
-                    case 3: mode = LightMode.PerZoneRipple; break;
-                    case 4: mode = LightMode.PerKeyRipple; break;
-                    case 5: mode = LightMode.MusicSync; break;
+                    case 2: mode = GetRippleModeFromCombo(); break;
+                    case 3: mode = LightMode.MusicSync; break;
                     default: mode = LightMode.Static; break;
                 }
 
+                // Re-enable hardware color updates when leaving settings tab
+                _engine.SetSettingsActive(false);
                 _engine.SetMode(mode);
                 UpdateModeTitle();
 
@@ -478,7 +693,10 @@ namespace KeySharp
                     RainbowPanel.Visibility = (mode == LightMode.RainbowWave) ? Visibility.Visible : Visibility.Collapsed;
 
                 if (RipplePanel != null)
-                    RipplePanel.Visibility = ((idx >= 2 && idx <= 4) || mode == LightMode.MusicSync) ? Visibility.Visible : Visibility.Collapsed;
+                    RipplePanel.Visibility = (idx == 2 || mode == LightMode.MusicSync) ? Visibility.Visible : Visibility.Collapsed;
+
+                if (RippleTypeRow != null)
+                    RippleTypeRow.Visibility = (mode == LightMode.MusicSync) ? Visibility.Collapsed : Visibility.Visible;
 
                 if (ColorPanel != null)
                     ColorPanel.Visibility = (mode == LightMode.Static || mode == LightMode.FixedRipple) ? Visibility.Visible : Visibility.Collapsed;
@@ -499,6 +717,7 @@ namespace KeySharp
 
                 // Reset to settings main view when navigating to settings tab
                 _settingsToolMode = null;
+                _engine.SetSettingsActive(true);
                 _engine.SetMode(LightMode.Static);
 
                 if (SettingsMainView != null) SettingsMainView.Visibility = Visibility.Visible;
@@ -542,7 +761,7 @@ namespace KeySharp
         {
             if (!_isLoaded || ThresholdVal == null) return;
             ThresholdVal.Text = $"{(int)e.NewValue}%";
-            _engine.SetAudioThreshold(e.NewValue);
+            _engine.SetBeatSensitivity(e.NewValue);
         }
 
         private void Bounce_Changed(object sender, RoutedEventArgs e)
@@ -579,6 +798,41 @@ namespace KeySharp
             _engine.SetRainbowSpread((int)e.NewValue);
         }
 
+        private void SliderRainbowSpeed_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            if (!_isLoaded || RainbowSpeedVal == null) return;
+            RainbowSpeedVal.Text = $"{(int)e.NewValue}ms";
+            _engine.SetRainbowSpeed((int)e.NewValue);
+        }
+
+        private LightMode GetRippleModeFromCombo()
+        {
+            if (RippleTypeCombo == null) return LightMode.FixedRipple;
+            return RippleTypeCombo.SelectedIndex switch
+            {
+                0 => LightMode.FixedRipple,
+                1 => LightMode.PerZoneRipple,
+                2 => LightMode.PerKeyRipple,
+                _ => LightMode.FixedRipple
+            };
+        }
+
+        private void RippleTypeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (!_isLoaded || _engine == null || RippleTypeCombo == null) return;
+
+            // Only apply if we're currently in Ripple mode (sidebar index 2) or MusicSync
+            if (ModeListBox != null && ModeListBox.SelectedIndex == 2)
+            {
+                LightMode mode = GetRippleModeFromCombo();
+                _engine.SetMode(mode);
+
+                // Show color panel only for Fixed Color ripple
+                if (ColorPanel != null)
+                    ColorPanel.Visibility = (mode == LightMode.FixedRipple) ? Visibility.Visible : Visibility.Collapsed;
+            }
+        }
+
         #endregion
 
         #region Settings Tools (Map Test / Calibration)
@@ -586,6 +840,8 @@ namespace KeySharp
         private void OpenMapTest_Click(object sender, RoutedEventArgs e)
         {
             _settingsToolMode = LightMode.MapTest;
+            // Disable settings black-out mode temporarily so the tools can update LEDs
+            _engine.SetSettingsActive(false);
             _engine.SetMode(LightMode.MapTest);
 
             if (SettingsMainView != null) SettingsMainView.Visibility = Visibility.Collapsed;
@@ -597,6 +853,8 @@ namespace KeySharp
         private void OpenCalibration_Click(object sender, RoutedEventArgs e)
         {
             _settingsToolMode = LightMode.Calibration;
+            // Disable settings black-out mode temporarily so the tools can update LEDs
+            _engine.SetSettingsActive(false);
             _engine.SetMode(LightMode.Calibration);
             UpdateCalibrationUI();
 
@@ -608,8 +866,9 @@ namespace KeySharp
 
         private void BackToSettings_Click(object sender, RoutedEventArgs e)
         {
-            // Restore previous mode (default to Static if nothing was selected)
+            // Restore settings black-out mode
             _settingsToolMode = null;
+            _engine.SetSettingsActive(true);
             _engine.SetMode(LightMode.Static);
 
             if (SettingsMainView != null) SettingsMainView.Visibility = Visibility.Visible;
@@ -664,6 +923,89 @@ namespace KeySharp
             catch (Exception ex)
             {
                 Console.WriteLine($"Auto-start registry error: {ex.Message}");
+            }
+        }
+
+        #endregion
+
+        #region Windows Dynamic Lighting Priority
+
+        private void CheckDynamicLightingPriority()
+        {
+            try
+            {
+                // If we already alerted the user once, don't show the startup popup again
+                if (System.IO.File.Exists(PriorityAlertedPath)) return;
+
+                using (var key = WinRegistry.CurrentUser.OpenSubKey(@"Software\Microsoft\Lighting\Providers", false))
+                {
+                    if (key == null) return;
+
+                    string[] valueNames = key.GetValueNames();
+                    string? keySharpName = null;
+
+                    foreach (var name in valueNames)
+                    {
+                        var val = key.GetValue(name)?.ToString();
+                        if (val != null && val.Contains("KeySharp", StringComparison.OrdinalIgnoreCase))
+                        {
+                            keySharpName = name;
+                            break;
+                        }
+                    }
+
+                    if (keySharpName != null && keySharpName != "1")
+                    {
+                        // Get the name of the app holding top priority
+                        var topPriorityVal = key.GetValue("1")?.ToString() ?? "Another App";
+                        string topAppName = topPriorityVal;
+                        
+                        // Simplify name (e.g. Remove package family suffix or namespaces)
+                        if (topAppName.Contains('_'))
+                        {
+                            topAppName = topAppName.Split('_')[0];
+                        }
+                        if (topAppName.Contains('.'))
+                        {
+                            topAppName = topAppName.Split('.')[topAppName.Split('.').Length - 1];
+                        }
+
+                        var result = MessageBox.Show(
+                            $"KeySharp is registered for Dynamic Lighting, but '{topAppName}' currently has a higher priority and might block KeySharp's lighting commands in the background.\n\nWould you like to open Windows settings to drag KeySharp to the top of the priority list?",
+                            "Dynamic Lighting Priority Conflict",
+                            MessageBoxButton.YesNo,
+                            MessageBoxImage.Information);
+
+                        // Mark as alerted so we don't pop up again
+                        string folder = System.IO.Path.GetDirectoryName(PriorityAlertedPath) ?? "";
+                        if (!System.IO.Directory.Exists(folder))
+                        {
+                            System.IO.Directory.CreateDirectory(folder);
+                        }
+                        System.IO.File.WriteAllText(PriorityAlertedPath, "alerted");
+
+                        if (result == System.Windows.MessageBoxResult.Yes)
+                        {
+                            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:personalization-lighting") { UseShellExecute = true });
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error checking Dynamic Lighting priority: {ex.Message}");
+            }
+        }
+
+        private void ManagePriority_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:personalization-lighting") { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Could not open settings: {ex.Message}", "Settings Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 

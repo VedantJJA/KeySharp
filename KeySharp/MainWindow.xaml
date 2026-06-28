@@ -7,6 +7,7 @@
             MinHeight="500" MinWidth="700"
             WindowStartupLocation="CenterScreen"
             WindowBackdropType="Mica"
+            Icon="Images/app.png"
             ExtendsContentIntoTitleBar="True">
 
     <Grid>
@@ -47,19 +48,7 @@
                     <ListBoxItem Padding="12,10" Margin="0,0,0,2">
                         <StackPanel Orientation="Horizontal">
                             <ui:SymbolIcon Symbol="Flash24" Margin="0,0,12,0"/>
-                            <TextBlock Text="Fixed Color Ripple" VerticalAlignment="Center" FontSize="13"/>
-                        </StackPanel>
-                    </ListBoxItem>
-                    <ListBoxItem Padding="12,10" Margin="0,0,0,2">
-                        <StackPanel Orientation="Horizontal">
-                            <ui:SymbolIcon Symbol="Target24" Margin="0,0,12,0"/>
-                            <TextBlock Text="Per-Zone RGB Ripple" VerticalAlignment="Center" FontSize="13"/>
-                        </StackPanel>
-                    </ListBoxItem>
-                    <ListBoxItem Padding="12,10" Margin="0,0,0,2">
-                        <StackPanel Orientation="Horizontal">
-                            <ui:SymbolIcon Symbol="Keyboard24" Margin="0,0,12,0"/>
-                            <TextBlock Text="Per-Key Random Ripple" VerticalAlignment="Center" FontSize="13"/>
+                            <TextBlock Text="Ripple" VerticalAlignment="Center" FontSize="13"/>
                         </StackPanel>
                     </ListBoxItem>
                     <ListBoxItem Padding="12,10" Margin="0,0,0,2">
@@ -119,7 +108,13 @@
                                     <TextBlock Text="RAINBOW SPREAD" FontSize="11" FontWeight="Bold" VerticalAlignment="Center"/>
                                     <TextBlock x:Name="RainbowSpreadVal" Text="5" FontSize="11" FontWeight="SemiBold" Opacity="0.7" HorizontalAlignment="Right"/>
                                 </DockPanel>
-                                <Slider x:Name="SliderRainbowSpread" Minimum="1" Maximum="30" Value="5" ValueChanged="SliderRainbowSpread_ValueChanged" Focusable="False" IsTabStop="False" Margin="0,0,0,2"/>
+                                <Slider x:Name="SliderRainbowSpread" Minimum="1" Maximum="30" Value="5" ValueChanged="SliderRainbowSpread_ValueChanged" Focusable="False" IsTabStop="False" Margin="0,0,0,10"/>
+
+                                <DockPanel Margin="0,0,0,6">
+                                    <TextBlock Text="WAVE SPEED" FontSize="11" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    <TextBlock x:Name="RainbowSpeedVal" Text="20ms" FontSize="11" FontWeight="SemiBold" Opacity="0.7" HorizontalAlignment="Right"/>
+                                </DockPanel>
+                                <Slider x:Name="SliderRainbowSpeed" Minimum="1" Maximum="200" Value="20" ValueChanged="SliderRainbowSpeed_ValueChanged" IsDirectionReversed="True" Focusable="False" IsTabStop="False" Margin="0,0,0,2"/>
                             </StackPanel>
                         </ui:Card>
                     </StackPanel>
@@ -129,6 +124,16 @@
                         <ui:Card Margin="0,0,0,8" Padding="12">
                             <StackPanel>
                                 <TextBlock Text="RIPPLE SETTINGS" FontSize="11" FontWeight="Bold" Opacity="0.7" Margin="0,0,0,8"/>
+
+                                <!-- Ripple Type Selector -->
+                                <DockPanel x:Name="RippleTypeRow" Margin="0,0,0,10">
+                                    <TextBlock Text="TYPE" FontSize="11" FontWeight="SemiBold" Opacity="0.8" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                    <ComboBox x:Name="RippleTypeCombo" SelectedIndex="0" SelectionChanged="RippleTypeCombo_SelectionChanged" Focusable="False" IsTabStop="False">
+                                        <ComboBoxItem Content="Fixed Color"/>
+                                        <ComboBoxItem Content="Per-Zone Rainbow"/>
+                                        <ComboBoxItem Content="Per-Key Random"/>
+                                    </ComboBox>
+                                </DockPanel>
 
                                 <ui:ToggleSwitch Content="Enable Wall Bounce" x:Name="BounceToggle" Checked="Bounce_Changed" Unchecked="Bounce_Changed" Margin="0,0,0,10" FontSize="12" Focusable="False" IsTabStop="False"/>
 
@@ -148,7 +153,7 @@
                                     <TextBlock Text="SPEED" FontSize="11" FontWeight="SemiBold" Opacity="0.8"/>
                                     <TextBlock x:Name="SpeedVal" Text="20ms" FontSize="11" Opacity="0.6" HorizontalAlignment="Right"/>
                                 </DockPanel>
-                                <Slider x:Name="SliderSpeed" Minimum="10" Maximum="200" Value="20" ValueChanged="SliderSpeed_ValueChanged" IsDirectionReversed="True" Focusable="False" IsTabStop="False" Margin="0,0,0,4"/>
+                                <Slider x:Name="SliderSpeed" Minimum="1" Maximum="100" Value="20" ValueChanged="SliderSpeed_ValueChanged" IsDirectionReversed="True" Focusable="False" IsTabStop="False" Margin="0,0,0,4"/>
                             </StackPanel>
                         </ui:Card>
                     </StackPanel>
@@ -286,8 +291,21 @@
                             <StackPanel>
                                 <TextBlock Text="General" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,16"/>
 
+                                <!-- Connected Device Status -->
+                                <DockPanel Margin="0,0,0,16">
+                                    <TextBlock Text="Connected Device:" VerticalAlignment="Center" Opacity="0.8" FontSize="12"/>
+                                    <TextBlock x:Name="DeviceStatusText" Text="Searching..." FontWeight="SemiBold" HorizontalAlignment="Right" VerticalAlignment="Center" FontSize="12" Foreground="#FFCC00"/>
+                                </DockPanel>
+
                                 <!-- Auto-Start Toggle -->
-                                <ui:ToggleSwitch x:Name="AutoStartToggle" Content="Launch KeySharp on Windows Startup" Margin="0,0,0,4" Checked="AutoStartToggle_Changed" Unchecked="AutoStartToggle_Changed"/>
+                                <ui:ToggleSwitch x:Name="AutoStartToggle" Content="Launch KeySharp on Windows Startup" Margin="0,0,0,8" Checked="AutoStartToggle_Changed" Unchecked="AutoStartToggle_Changed"/>
+
+                                <!-- Dynamic Lighting Priority Button -->
+                                <ui:Button x:Name="ManagePriorityBtn" Content="Windows Dynamic Lighting Settings" Click="ManagePriority_Click" Appearance="Secondary" HorizontalAlignment="Stretch" Padding="8,6" FontSize="12" Margin="0,0,0,4">
+                                    <ui:Button.Icon>
+                                        <ui:SymbolIcon Symbol="Settings24"/>
+                                    </ui:Button.Icon>
+                                </ui:Button>
                             </StackPanel>
                         </ui:Card>
 
@@ -329,7 +347,7 @@
                                     </ui:Button.Icon>
                                 </ui:Button>
 
-                                <ui:Button Content="Open Hardware Calibration" Click="OpenCalibration_Click" Appearance="Secondary" HorizontalAlignment="Stretch" Padding="10" FontSize="12" Cursor="Hand">
+                                <ui:Button x:Name="OpenCalibrationBtn" Content="Open Hardware Calibration" Click="OpenCalibration_Click" Appearance="Secondary" HorizontalAlignment="Stretch" Padding="10" FontSize="12" Cursor="Hand">
                                     <ui:Button.Icon>
                                         <ui:SymbolIcon Symbol="Wrench24"/>
                                     </ui:Button.Icon>
@@ -378,60 +396,42 @@
                 </StackPanel>
             </ScrollViewer>
 
-            <!-- WELCOME OVERLAY / IMAGE CAROUSEL (Responsive Viewbox Fix) -->
-            <Grid x:Name="WelcomeOverlay" Grid.Column="0" Grid.ColumnSpan="2" Background="{DynamicResource ApplicationBackgroundBrush}" Visibility="Collapsed" Panel.ZIndex="100">
-                <Grid Margin="24">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <!-- Title -->
-                        <RowDefinition Height="*"/>
-                        <!-- Image content to stretch/fill securely -->
-                        <RowDefinition Height="Auto"/>
-                        <!-- Controls -->
-                    </Grid.RowDefinitions>
+            <!-- WELCOME OVERLAY / GUIDED TOUR OVERLAY -->
+            <Grid x:Name="WelcomeOverlay" Grid.Column="0" Grid.ColumnSpan="2" Background="#95000000" Visibility="Collapsed" Panel.ZIndex="200" SizeChanged="WelcomeOverlay_SizeChanged">
+                <!-- Glowing Tour Highlight Box -->
+                <Border x:Name="TourHighlight" BorderBrush="#00FFCC" BorderThickness="2.5" CornerRadius="6" HorizontalAlignment="Left" VerticalAlignment="Top" Background="Transparent" IsHitTestVisible="False" Visibility="Collapsed">
+                    <Border.Effect>
+                        <DropShadowEffect Color="#00FFCC" BlurRadius="12" ShadowDepth="0" Opacity="0.9"/>
+                    </Border.Effect>
+                </Border>
 
-                    <!-- Title -->
-                    <TextBlock Grid.Row="0" Text="Welcome to KeySharp Pro" FontSize="26" FontWeight="Bold" Margin="0,0,0,16" HorizontalAlignment="Center"/>
-
-                    <!-- DYNAMIC SETUP IMAGE ENCLOSED IN VIEWBOX FOR STRICT SCALING -->
-                    <Viewbox Grid.Row="1" Stretch="Uniform" Margin="0,0,0,16">
-                        <Image x:Name="SetupImage" Stretch="Uniform" Visibility="Collapsed"/>
-                    </Viewbox>
-
-                    <!-- FALLBACK TEXT (If images are not found) -->
-                    <ui:Card Grid.Row="1" x:Name="WelcomeFallbackText" Margin="0,0,0,16" Padding="24" Width="460" VerticalAlignment="Center" Visibility="Collapsed">
-                        <StackPanel>
-                            <TextBlock Text="Quick Setup Instructions" FontWeight="SemiBold" FontSize="16" Margin="0,0,0,16" Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
-                            <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
-                                <ui:SymbolIcon Symbol="Important24" Margin="0,0,16,0" VerticalAlignment="Top" Foreground="#FFCC00"/>
-                                <TextBlock Text="1. Go to Windows Settings and set KeySharp to a higher priority/startup app for the best responsiveness." TextWrapping="Wrap" Width="380" Opacity="0.9" LineHeight="20"/>
-                            </StackPanel>
-                            <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
-                                <ui:SymbolIcon Symbol="Wrench24" Margin="0,0,16,0" VerticalAlignment="Top" Foreground="#007AFF"/>
-                                <TextBlock Text="2. Go to the 'Hardware Calibration' tab to map out the physical zones of your keyboard." TextWrapping="Wrap" Width="380" Opacity="0.9" LineHeight="20"/>
-                            </StackPanel>
-                            <StackPanel Orientation="Horizontal">
-                                <ui:SymbolIcon Symbol="Save24" Margin="0,0,16,0" VerticalAlignment="Top" Foreground="#34C759"/>
-                                <TextBlock Text="3. Click 'Save Map' after calibrating so it automatically loads every time the app opens." TextWrapping="Wrap" Width="380" Opacity="0.9" LineHeight="20"/>
-                            </StackPanel>
+                <!-- Callout Bubble Card -->
+                <ui:Card x:Name="TourBubble" Width="330" Padding="16" HorizontalAlignment="Left" VerticalAlignment="Top" Background="#1C1C1E" BorderBrush="#333">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                            <ui:SymbolIcon x:Name="TourIcon" Symbol="PaintBrush24" Margin="0,0,10,0" VerticalAlignment="Center" Foreground="#00FFCC" Filled="True"/>
+                            <TextBlock x:Name="TourTitle" Text="Tour Title" FontSize="14" FontWeight="Bold" VerticalAlignment="Center" Foreground="White"/>
                         </StackPanel>
-                    </ui:Card>
 
-                    <!-- Nav Buttons -->
-                    <Grid Grid.Row="2" HorizontalAlignment="Center" Margin="0,0,0,8">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="TourDescription" Text="Tour description..." FontSize="12" LineHeight="18" TextWrapping="Wrap" Margin="0,0,0,16" Opacity="0.9" Foreground="#DDD"/>
+                        
+                        <!-- Dynamic Tour Action Button -->
+                        <ui:Button x:Name="TourActionButton" Content="Action" Click="TourActionButton_Click" Appearance="Primary" HorizontalAlignment="Stretch" Padding="8" FontSize="12" Visibility="Collapsed" Margin="0,0,0,16"/>
 
-                        <ui:Button x:Name="SetupSkipBtn" Grid.Column="0" Content="Skip" Margin="0,0,24,0" Click="SetupSkip_Click" Padding="12,6" FontSize="12" Cursor="Hand" Background="Transparent" BorderThickness="1"/>
-                        <ui:Button x:Name="SetupPrevBtn" Grid.Column="1" Content="&lt;" Margin="0,0,8,0" Click="SetupPrev_Click" Padding="16,6" FontSize="15" FontWeight="Bold" Cursor="Hand" IsEnabled="False"/>
-                        <ui:Button x:Name="SetupNextBtn" Grid.Column="2" Content="&gt;" Appearance="Primary" Click="SetupNext_Click" Padding="16,6" FontSize="15" FontWeight="Bold" Cursor="Hand"/>
-                    </Grid>
-                </Grid>
+                        <DockPanel>
+                            <!-- Step counter -->
+                            <TextBlock x:Name="TourStepCounter" Text="1/5" FontSize="11" Opacity="0.6" VerticalAlignment="Center" Foreground="White"/>
+                            
+                            <!-- Navigation -->
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                <ui:Button x:Name="TourSkipBtn" Content="Skip" Click="SetupSkip_Click" Margin="0,0,12,0" Padding="8,3" FontSize="11" Background="Transparent" Foreground="#888" BorderThickness="0" Cursor="Hand"/>
+                                <ui:Button x:Name="SetupPrevBtn" Content="&lt; Back" Click="SetupPrev_Click" Margin="0,0,8,0" Padding="12,4" FontSize="11" Background="Transparent" Foreground="White" BorderBrush="#444" IsEnabled="False"/>
+                                <ui:Button x:Name="SetupNextBtn" Content="Next &gt;" Click="SetupNext_Click" Appearance="Primary" Padding="14,4" FontSize="11"/>
+                            </StackPanel>
+                        </DockPanel>
+                    </StackPanel>
+                </ui:Card>
             </Grid>
-
         </Grid>
     </Grid>
 </ui:FluentWindow>
