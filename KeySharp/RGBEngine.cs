@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -56,6 +56,7 @@ namespace KeySharp
         private CancellationTokenSource _cts = new CancellationTokenSource();
         private bool _isReconnecting = false;
         private double _rainbowHue = 0;
+        private double _rainbowSpread = 5;
         private int _waveSpeedMs = 20;
         private int _maxWaveSteps = 5;
         private int _rippleWidth = 1;
@@ -75,7 +76,9 @@ namespace KeySharp
         private WinUIColor[] _calibColorsCache = Array.Empty<WinUIColor>();
         private int[] _calibIndicesCache = Array.Empty<int>();
 
-        private string _configPath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "last_map_config.txt");
+        private static readonly string _appDataFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "KeySharp");
+        private static readonly string _configPath = Path.Combine(_appDataFolder, "last_map_config.txt");
+        private static readonly string _cachedMapPath = Path.Combine(_appDataFolder, "keymap_cache.csv");
 
         // Fired when the LampArray is loaded so the UI can populate available zones dynamically
         public Action? OnHardwareConnected;
@@ -233,6 +236,7 @@ namespace KeySharp
         public void SetMaxSteps(int steps) => _maxWaveSteps = steps;
         public void SetRippleWidth(int width) => _rippleWidth = width;
         public void SetSpeed(int ms) => _waveSpeedMs = ms;
+        public void SetRainbowSpread(double val) => _rainbowSpread = val;
         public void SetColor(byte r, byte g, byte b) { _currentColor = WinUIColor.FromArgb(255, r, g, b); if (_currentMode == LightMode.Static) UpdateHardwareColor(); }
 
         public void TriggerKeyPress(int vkCode)
@@ -463,12 +467,18 @@ namespace KeySharp
         {
             try
             {
+                if (!Directory.Exists(_appDataFolder)) Directory.CreateDirectory(_appDataFolder);
+
                 string target = path ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "keymap.csv");
                 using (StreamWriter sw = new StreamWriter(target))
                 {
                     foreach (var entry in _calibrationMap.OrderBy(x => x.Key))
                         sw.WriteLine($"{entry.Key},{string.Join(";", entry.Value)}");
                 }
+
+                // Cache a copy in LocalAppData so it survives restarts and reinstalls
+                if (target != _cachedMapPath)
+                    File.Copy(target, _cachedMapPath, true);
 
                 File.WriteAllText(_configPath, target);
             }
@@ -482,13 +492,24 @@ namespace KeySharp
         {
             try
             {
+                if (!Directory.Exists(_appDataFolder)) Directory.CreateDirectory(_appDataFolder);
+
                 string target = path ?? string.Empty;
 
                 if (string.IsNullOrEmpty(target))
                 {
                     if (File.Exists(_configPath))
                     {
-                        target = File.ReadAllText(_configPath).Trim();
+                        string saved = File.ReadAllText(_configPath).Trim();
+                        // Prefer the original path if it still exists, otherwise fall back to cached copy
+                        if (File.Exists(saved))
+                            target = saved;
+                        else if (File.Exists(_cachedMapPath))
+                            target = _cachedMapPath;
+                    }
+                    else if (File.Exists(_cachedMapPath))
+                    {
+                        target = _cachedMapPath;
                     }
                     else
                     {
@@ -507,6 +528,10 @@ namespace KeySharp
                     _calibrationMap[int.Parse(parts[0])] = keys;
                 }
 
+                // Cache a copy in LocalAppData so it survives restarts and reinstalls
+                if (target != _cachedMapPath)
+                    File.Copy(target, _cachedMapPath, true);
+
                 File.WriteAllText(_configPath, target);
             }
             catch (Exception ex)
@@ -519,7 +544,7 @@ namespace KeySharp
         {
             int count = _lampArray!.LampCount;
             int[] indices = Enumerable.Range(0, count).ToArray();
-            WinUIColor[] colors = indices.Select(i => ColorFromHSV((_rainbowHue + (i * 5)) % 360, 0.8, _globalBrightness)).ToArray();
+            WinUIColor[] colors = indices.Select(i => ColorFromHSV((_rainbowHue + (i * _rainbowSpread)) % 360, 0.8, _globalBrightness)).ToArray();
             _rainbowHue = (_rainbowHue + 3) % 360;
 
             lock (_hwLock)

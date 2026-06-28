@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
@@ -8,6 +8,7 @@ using System.Windows.Controls.Primitives;
 using Microsoft.Win32;
 using Wpf.Ui.Controls;
 using WinForms = System.Windows.Forms;
+using WinRegistry = Microsoft.Win32.Registry;
 
 using MessageBox = System.Windows.MessageBox;
 using MessageBoxButton = System.Windows.MessageBoxButton;
@@ -34,6 +35,13 @@ namespace KeySharp
 
         // Power Tracking Variable
         private bool? _lastPowerState = null;
+
+        // Track which settings tool sub-view is active
+        private LightMode? _settingsToolMode = null;
+
+        // Registry key for auto-start
+        private const string AutoStartRegistryKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+        private const string AutoStartValueName = "KeySharp Pro";
 
         // Setup Carousel Variables
         private int _currentSetupStep = 1;
@@ -70,8 +78,9 @@ namespace KeySharp
                         try
                         {
                             if (ModeListBox == null) return;
-                            int modeIdx = ModeListBox.SelectedIndex;
-                            if (modeIdx == 5 || modeIdx == 6)
+
+                            // Update calibration UI if in calibration or map test mode (triggered from settings)
+                            if (_settingsToolMode == LightMode.Calibration || _settingsToolMode == LightMode.MapTest)
                             {
                                 UpdateCalibrationUI();
                             }
@@ -99,6 +108,9 @@ namespace KeySharp
 
             UpdateCalibrationUI();
             UpdateModeTitle();
+
+            // Initialize auto-start toggle from registry
+            InitializeAutoStartToggle();
 
             // Run first time setup check
             CheckFirstRun();
@@ -437,23 +449,39 @@ namespace KeySharp
                 if (SettingsListBox != null) SettingsListBox.SelectedIndex = -1;
                 _isHandlingSelection = false;
 
+                // Clear any active settings tool mode when switching back to sidebar modes
+                _settingsToolMode = null;
+
                 if (MainContentPanel != null) MainContentPanel.Visibility = Visibility.Visible;
                 if (SettingsContentPanel != null) SettingsContentPanel.Visibility = Visibility.Collapsed;
 
-                _engine.SetMode((LightMode)idx);
+                // Map sidebar indices to LightMode: 0=Static, 1=RainbowWave, 2=FixedRipple, 3=PerZoneRipple, 4=PerKeyRipple, 5=MusicSync
+                LightMode mode;
+                switch (idx)
+                {
+                    case 0: mode = LightMode.Static; break;
+                    case 1: mode = LightMode.RainbowWave; break;
+                    case 2: mode = LightMode.FixedRipple; break;
+                    case 3: mode = LightMode.PerZoneRipple; break;
+                    case 4: mode = LightMode.PerKeyRipple; break;
+                    case 5: mode = LightMode.MusicSync; break;
+                    default: mode = LightMode.Static; break;
+                }
+
+                _engine.SetMode(mode);
                 UpdateModeTitle();
 
                 if (MusicPanel != null)
-                    MusicPanel.Visibility = (idx == 7) ? Visibility.Visible : Visibility.Collapsed;
+                    MusicPanel.Visibility = (mode == LightMode.MusicSync) ? Visibility.Visible : Visibility.Collapsed;
+
+                if (RainbowPanel != null)
+                    RainbowPanel.Visibility = (mode == LightMode.RainbowWave) ? Visibility.Visible : Visibility.Collapsed;
 
                 if (RipplePanel != null)
-                    RipplePanel.Visibility = ((idx >= 2 && idx <= 4) || idx == 7) ? Visibility.Visible : Visibility.Collapsed;
+                    RipplePanel.Visibility = ((idx >= 2 && idx <= 4) || mode == LightMode.MusicSync) ? Visibility.Visible : Visibility.Collapsed;
 
                 if (ColorPanel != null)
-                    ColorPanel.Visibility = (idx == 0 || idx == 2) ? Visibility.Visible : Visibility.Collapsed;
-
-                if (CalibrationPanel != null)
-                    CalibrationPanel.Visibility = (idx == 6) ? Visibility.Visible : Visibility.Collapsed;
+                    ColorPanel.Visibility = (mode == LightMode.Static || mode == LightMode.FixedRipple) ? Visibility.Visible : Visibility.Collapsed;
             }
             catch (Exception ex) { Console.WriteLine($"Selection Change Error: {ex.Message}"); }
         }
@@ -468,6 +496,15 @@ namespace KeySharp
                 _isHandlingSelection = true;
                 if (ModeListBox != null) ModeListBox.SelectedIndex = -1;
                 _isHandlingSelection = false;
+
+                // Reset to settings main view when navigating to settings tab
+                _settingsToolMode = null;
+                _engine.SetMode(LightMode.Static);
+
+                if (SettingsMainView != null) SettingsMainView.Visibility = Visibility.Visible;
+                if (SettingsMapTestView != null) SettingsMapTestView.Visibility = Visibility.Collapsed;
+                if (SettingsCalibrationView != null) SettingsCalibrationView.Visibility = Visibility.Collapsed;
+                if (SettingsTitle != null) SettingsTitle.Text = "SETTINGS";
 
                 if (MainContentPanel != null) MainContentPanel.Visibility = Visibility.Collapsed;
                 if (SettingsContentPanel != null) SettingsContentPanel.Visibility = Visibility.Visible;
@@ -533,6 +570,101 @@ namespace KeySharp
             if (!_isLoaded || SpeedVal == null) return;
             SpeedVal.Text = $"{(int)e.NewValue}ms";
             _engine.SetSpeed((int)e.NewValue);
+        }
+
+        private void SliderRainbowSpread_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            if (!_isLoaded || RainbowSpreadVal == null) return;
+            RainbowSpreadVal.Text = $"{(int)e.NewValue}";
+            _engine.SetRainbowSpread((int)e.NewValue);
+        }
+
+        #endregion
+
+        #region Settings Tools (Map Test / Calibration)
+
+        private void OpenMapTest_Click(object sender, RoutedEventArgs e)
+        {
+            _settingsToolMode = LightMode.MapTest;
+            _engine.SetMode(LightMode.MapTest);
+
+            if (SettingsMainView != null) SettingsMainView.Visibility = Visibility.Collapsed;
+            if (SettingsMapTestView != null) SettingsMapTestView.Visibility = Visibility.Visible;
+            if (SettingsCalibrationView != null) SettingsCalibrationView.Visibility = Visibility.Collapsed;
+            if (SettingsTitle != null) SettingsTitle.Text = "MAP TEST MODE";
+        }
+
+        private void OpenCalibration_Click(object sender, RoutedEventArgs e)
+        {
+            _settingsToolMode = LightMode.Calibration;
+            _engine.SetMode(LightMode.Calibration);
+            UpdateCalibrationUI();
+
+            if (SettingsMainView != null) SettingsMainView.Visibility = Visibility.Collapsed;
+            if (SettingsMapTestView != null) SettingsMapTestView.Visibility = Visibility.Collapsed;
+            if (SettingsCalibrationView != null) SettingsCalibrationView.Visibility = Visibility.Visible;
+            if (SettingsTitle != null) SettingsTitle.Text = "HARDWARE CALIBRATION";
+        }
+
+        private void BackToSettings_Click(object sender, RoutedEventArgs e)
+        {
+            // Restore previous mode (default to Static if nothing was selected)
+            _settingsToolMode = null;
+            _engine.SetMode(LightMode.Static);
+
+            if (SettingsMainView != null) SettingsMainView.Visibility = Visibility.Visible;
+            if (SettingsMapTestView != null) SettingsMapTestView.Visibility = Visibility.Collapsed;
+            if (SettingsCalibrationView != null) SettingsCalibrationView.Visibility = Visibility.Collapsed;
+            if (SettingsTitle != null) SettingsTitle.Text = "SETTINGS";
+        }
+
+        #endregion
+
+        #region Auto-Start
+
+        private void InitializeAutoStartToggle()
+        {
+            try
+            {
+                using (var key = WinRegistry.CurrentUser.OpenSubKey(AutoStartRegistryKey, false))
+                {
+                    if (key != null)
+                    {
+                        var val = key.GetValue(AutoStartValueName);
+                        if (AutoStartToggle != null)
+                            AutoStartToggle.IsChecked = val != null;
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private void AutoStartToggle_Changed(object sender, RoutedEventArgs e)
+        {
+            if (!_isLoaded) return;
+
+            try
+            {
+                using (var key = WinRegistry.CurrentUser.OpenSubKey(AutoStartRegistryKey, true))
+                {
+                    if (key == null) return;
+
+                    if (AutoStartToggle.IsChecked == true)
+                    {
+                        string exePath = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName ?? "";
+                        if (!string.IsNullOrEmpty(exePath))
+                            key.SetValue(AutoStartValueName, $"\"{exePath}\"");
+                    }
+                    else
+                    {
+                        key.DeleteValue(AutoStartValueName, false);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Auto-start registry error: {ex.Message}");
+            }
         }
 
         #endregion

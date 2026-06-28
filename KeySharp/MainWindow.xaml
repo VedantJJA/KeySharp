@@ -1,4 +1,4 @@
-﻿<ui:FluentWindow x:Class="KeySharp.MainWindow"
+<ui:FluentWindow x:Class="KeySharp.MainWindow"
             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
@@ -64,18 +64,6 @@
                     </ListBoxItem>
                     <ListBoxItem Padding="12,10" Margin="0,0,0,2">
                         <StackPanel Orientation="Horizontal">
-                            <ui:SymbolIcon Symbol="Beaker24" Margin="0,0,12,0"/>
-                            <TextBlock Text="Map Test Mode" VerticalAlignment="Center" FontSize="13"/>
-                        </StackPanel>
-                    </ListBoxItem>
-                    <ListBoxItem Padding="12,10" Margin="0,0,0,2">
-                        <StackPanel Orientation="Horizontal">
-                            <ui:SymbolIcon Symbol="Wrench24" Margin="0,0,12,0"/>
-                            <TextBlock Text="Hardware Calibration" VerticalAlignment="Center" FontSize="13"/>
-                        </StackPanel>
-                    </ListBoxItem>
-                    <ListBoxItem Padding="12,10" Margin="0,0,0,2">
-                        <StackPanel Orientation="Horizontal">
                             <ui:SymbolIcon Symbol="Headphones24" Margin="0,0,12,0"/>
                             <TextBlock Text="Music Beat Sync" VerticalAlignment="Center" FontSize="13"/>
                         </StackPanel>
@@ -119,6 +107,19 @@
                                     <TextBlock x:Name="ThresholdVal" Text="50%" FontSize="11" FontWeight="SemiBold" Opacity="0.7" HorizontalAlignment="Right"/>
                                 </DockPanel>
                                 <Slider x:Name="SliderThreshold" Minimum="1" Maximum="100" Value="50" ValueChanged="SliderThreshold_ValueChanged" Focusable="False" IsTabStop="False" Margin="0,0,0,2"/>
+                            </StackPanel>
+                        </ui:Card>
+                    </StackPanel>
+
+                    <!-- RAINBOW WAVE SETTINGS -->
+                    <StackPanel x:Name="RainbowPanel" Visibility="Collapsed">
+                        <ui:Card Margin="0,0,0,8" Padding="12">
+                            <StackPanel>
+                                <DockPanel Margin="0,0,0,6">
+                                    <TextBlock Text="RAINBOW SPREAD" FontSize="11" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    <TextBlock x:Name="RainbowSpreadVal" Text="5" FontSize="11" FontWeight="SemiBold" Opacity="0.7" HorizontalAlignment="Right"/>
+                                </DockPanel>
+                                <Slider x:Name="SliderRainbowSpread" Minimum="1" Maximum="30" Value="5" ValueChanged="SliderRainbowSpread_ValueChanged" Focusable="False" IsTabStop="False" Margin="0,0,0,2"/>
                             </StackPanel>
                         </ui:Card>
                     </StackPanel>
@@ -268,11 +269,96 @@
                         </ui:Card>
                     </StackPanel>
 
-                    <!-- CALIBRATION -->
-                    <Border x:Name="CalibrationPanel" Visibility="Collapsed">
-                        <ui:Card Margin="0,0,0,8" Padding="12">
+
+                </StackPanel>
+            </ScrollViewer>
+
+            <!-- APP SETTINGS PANEL -->
+            <ScrollViewer x:Name="SettingsContentPanel" Grid.Column="1" VerticalScrollBarVisibility="Auto" Margin="8,0,12,8" Visibility="Collapsed">
+                <StackPanel Margin="8">
+                    <TextBlock x:Name="SettingsTitle" Text="SETTINGS" FontSize="16" FontWeight="Bold" Opacity="0.8" Margin="0,0,0,12"/>
+
+                    <!-- MAIN SETTINGS VIEW -->
+                    <StackPanel x:Name="SettingsMainView">
+
+                        <!-- GENERAL SETTINGS -->
+                        <ui:Card Padding="16" Margin="0,0,0,12">
                             <StackPanel>
-                                <TextBlock Text="HARDWARE CALIBRATION" FontSize="11" FontWeight="Bold" Opacity="0.7" Margin="0,0,0,8"/>
+                                <TextBlock Text="General" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,16"/>
+
+                                <!-- Auto-Start Toggle -->
+                                <ui:ToggleSwitch x:Name="AutoStartToggle" Content="Launch KeySharp on Windows Startup" Margin="0,0,0,4" Checked="AutoStartToggle_Changed" Unchecked="AutoStartToggle_Changed"/>
+                            </StackPanel>
+                        </ui:Card>
+
+                        <!-- POWER MANAGEMENT SETTINGS -->
+                        <ui:Card Padding="16" Margin="0,0,0,12">
+                            <StackPanel>
+                                <TextBlock Text="Power Management" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,16"/>
+
+                                <!-- Battery Toggle -->
+                                <ui:ToggleSwitch x:Name="OffOnBatteryToggle" Content="Turn off RGB on Battery Power" Margin="0,0,0,12" Checked="SettingsToggle_Changed" Unchecked="SettingsToggle_Changed"/>
+
+                                <!-- Charger Toggle -->
+                                <ui:ToggleSwitch x:Name="ChargerRippleToggle" Content="Trigger Ripple on Charger Connect/Disconnect" Margin="0,0,0,16" Checked="SettingsToggle_Changed" Unchecked="SettingsToggle_Changed"/>
+
+                                <!-- Zone Selector -->
+                                <Grid Margin="0,0,0,4">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Charger Ripple Start Zone:" VerticalAlignment="Center" Margin="0,0,12,0" Opacity="0.8"/>
+
+                                    <!-- Dynamically Populated from Hardware Array -->
+                                    <ComboBox x:Name="ChargerZoneCombo" Grid.Column="1" SelectedIndex="0" SelectionChanged="SettingsCombo_Changed">
+                                        <ComboBoxItem Content="Middle"/>
+                                    </ComboBox>
+                                </Grid>
+                            </StackPanel>
+                        </ui:Card>
+
+                        <!-- TOOLS -->
+                        <ui:Card Padding="16" Margin="0,0,0,12">
+                            <StackPanel>
+                                <TextBlock Text="Tools" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,16"/>
+
+                                <ui:Button Content="Open Map Test Mode" Click="OpenMapTest_Click" Appearance="Secondary" HorizontalAlignment="Stretch" Padding="10" FontSize="12" Margin="0,0,0,8" Cursor="Hand">
+                                    <ui:Button.Icon>
+                                        <ui:SymbolIcon Symbol="Beaker24"/>
+                                    </ui:Button.Icon>
+                                </ui:Button>
+
+                                <ui:Button Content="Open Hardware Calibration" Click="OpenCalibration_Click" Appearance="Secondary" HorizontalAlignment="Stretch" Padding="10" FontSize="12" Cursor="Hand">
+                                    <ui:Button.Icon>
+                                        <ui:SymbolIcon Symbol="Wrench24"/>
+                                    </ui:Button.Icon>
+                                </ui:Button>
+                            </StackPanel>
+                        </ui:Card>
+
+                    </StackPanel>
+
+                    <!-- INLINE MAP TEST VIEW (shown when Map Test is activated from Settings) -->
+                    <StackPanel x:Name="SettingsMapTestView" Visibility="Collapsed">
+                        <ui:Button Content="← Back to Settings" Click="BackToSettings_Click" Appearance="Secondary" Margin="0,0,0,12" Padding="8,6" FontSize="12" Cursor="Hand"/>
+                        <ui:Card Padding="16" Margin="0,0,0,12">
+                            <StackPanel>
+                                <TextBlock Text="MAP TEST MODE" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,12"/>
+                                <TextBlock Text="Press any key on your keyboard. The corresponding hardware zone will light up to confirm your keymap is correct." TextWrapping="Wrap" Opacity="0.7" Margin="0,0,0,12" LineHeight="20"/>
+                                <Border Background="#1A1A1A" CornerRadius="4" Padding="10">
+                                    <TextBlock x:Name="MapTestStatusText" Text="Waiting for key press..." Foreground="#00FFCC" FontFamily="Consolas" FontSize="12" HorizontalAlignment="Center"/>
+                                </Border>
+                            </StackPanel>
+                        </ui:Card>
+                    </StackPanel>
+
+                    <!-- INLINE CALIBRATION VIEW (shown when Calibration is activated from Settings) -->
+                    <StackPanel x:Name="SettingsCalibrationView" Visibility="Collapsed">
+                        <ui:Button Content="← Back to Settings" Click="BackToSettings_Click" Appearance="Secondary" Margin="0,0,0,12" Padding="8,6" FontSize="12" Cursor="Hand"/>
+                        <ui:Card Padding="16" Margin="0,0,0,12">
+                            <StackPanel>
+                                <TextBlock Text="HARDWARE CALIBRATION" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,12"/>
 
                                 <Border Background="#1A1A1A" CornerRadius="4" Padding="10" Margin="0,0,0,12">
                                     <TextBlock x:Name="ZoneInfoText" Text="Zone: 0" Foreground="#00FFCC" FontFamily="Consolas" FontSize="12" HorizontalAlignment="Center"/>
@@ -287,42 +373,8 @@
                                 <ui:Button Content="LOAD MAP" Click="LoadBtn_Click" HorizontalAlignment="Stretch" Padding="6" FontSize="12" Focusable="False" IsTabStop="False"/>
                             </StackPanel>
                         </ui:Card>
-                    </Border>
+                    </StackPanel>
 
-                </StackPanel>
-            </ScrollViewer>
-
-            <!-- APP SETTINGS PANEL -->
-            <ScrollViewer x:Name="SettingsContentPanel" Grid.Column="1" VerticalScrollBarVisibility="Auto" Margin="8,0,12,8" Visibility="Collapsed">
-                <StackPanel Margin="8">
-                    <TextBlock Text="SETTINGS" FontSize="16" FontWeight="Bold" Opacity="0.8" Margin="0,0,0,12"/>
-
-                    <!-- POWER MANAGEMENT SETTINGS -->
-                    <ui:Card Padding="16" Margin="0,0,0,12">
-                        <StackPanel>
-                            <TextBlock Text="Power Management" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,16"/>
-
-                            <!-- Battery Toggle -->
-                            <ui:ToggleSwitch x:Name="OffOnBatteryToggle" Content="Turn off RGB on Battery Power" Margin="0,0,0,12" Checked="SettingsToggle_Changed" Unchecked="SettingsToggle_Changed"/>
-
-                            <!-- Charger Toggle -->
-                            <ui:ToggleSwitch x:Name="ChargerRippleToggle" Content="Trigger Ripple on Charger Connect/Disconnect" Margin="0,0,0,16" Checked="SettingsToggle_Changed" Unchecked="SettingsToggle_Changed"/>
-
-                            <!-- Zone Selector -->
-                            <Grid Margin="0,0,0,4">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="Charger Ripple Start Zone:" VerticalAlignment="Center" Margin="0,0,12,0" Opacity="0.8"/>
-
-                                <!-- Dynamically Populated from Hardware Array -->
-                                <ComboBox x:Name="ChargerZoneCombo" Grid.Column="1" SelectedIndex="0" SelectionChanged="SettingsCombo_Changed">
-                                    <ComboBoxItem Content="Middle"/>
-                                </ComboBox>
-                            </Grid>
-                        </StackPanel>
-                    </ui:Card>
                 </StackPanel>
             </ScrollViewer>
 
