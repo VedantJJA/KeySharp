@@ -57,6 +57,12 @@
                             <TextBlock Text="Music Beat Sync" VerticalAlignment="Center" FontSize="13"/>
                         </StackPanel>
                     </ListBoxItem>
+                    <ListBoxItem Padding="12,10" Margin="0,0,0,2">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:SymbolIcon Symbol="Desktop24" Margin="0,0,12,0"/>
+                            <TextBlock Text="Screen Mirror" VerticalAlignment="Center" FontSize="13"/>
+                        </StackPanel>
+                    </ListBoxItem>
                 </ListBox>
 
                 <!-- SETTINGS TAB (BOTTOM) -->
@@ -274,6 +280,35 @@
                         </ui:Card>
                     </StackPanel>
 
+                    <!-- SCREEN MIRROR PANEL -->
+                    <StackPanel x:Name="ScreenMirrorPanel" Visibility="Collapsed">
+                        <ui:Card Margin="0,0,0,8" Padding="12">
+                            <StackPanel>
+                                <TextBlock Text="SCREEN MIRROR SETTINGS" FontSize="11" FontWeight="Bold" Opacity="0.7" Margin="0,0,0,10"/>
+                                
+                                <Grid Margin="0,0,0,12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="TARGET SCREEN" FontSize="11" FontWeight="SemiBold" Opacity="0.8" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                    <ComboBox x:Name="ScreenMirrorCombo" Grid.Column="1" SelectedIndex="0" SelectionChanged="ScreenMirrorCombo_SelectionChanged" Focusable="False" IsTabStop="False">
+                                        <ComboBoxItem Content="Primary Monitor"/>
+                                    </ComboBox>
+                                </Grid>
+
+                                <DockPanel Margin="0,0,0,2">
+                                    <TextBlock Text="REFRESH RATE (FPS)" FontSize="11" FontWeight="SemiBold" Opacity="0.8"/>
+                                    <TextBlock x:Name="ScreenMirrorSpeedVal" Text="30 FPS" FontSize="11" Opacity="0.6" HorizontalAlignment="Right"/>
+                                </DockPanel>
+                                <Slider x:Name="SliderScreenMirrorSpeed" Minimum="10" Maximum="60" Value="30" ValueChanged="SliderScreenMirrorSpeed_ValueChanged" Focusable="False" IsTabStop="False" Margin="0,0,0,4"/>
+
+                                <ui:ToggleSwitch x:Name="ScreenMirrorContrastToggle" Content="High Contrast Mode" Checked="ScreenMirrorContrastToggle_Changed" Unchecked="ScreenMirrorContrastToggle_Changed" Margin="0,4,0,4" FontSize="12" Focusable="False" IsTabStop="False"/>
+
+                                <TextBlock Text="Note: Capture area coordinates map directly to key positions on your keyboard for accurate ambient lighting. Highly resource optimized." FontSize="10" Opacity="0.5" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                            </StackPanel>
+                        </ui:Card>
+                    </StackPanel>
 
                 </StackPanel>
             </ScrollViewer>
@@ -354,6 +389,12 @@
                                     </ui:Button.Icon>
                                 </ui:Button>
 
+                                <ui:Button Content="Preview Zone Map" Click="OpenZonePreview_Click" Appearance="Secondary" HorizontalAlignment="Stretch" Padding="10" FontSize="12" Margin="0,0,0,8" Cursor="Hand">
+                                    <ui:Button.Icon>
+                                        <ui:SymbolIcon Symbol="Grid24"/>
+                                    </ui:Button.Icon>
+                                </ui:Button>
+
                                 <ui:Button x:Name="OpenCalibrationBtn" Content="Open Hardware Calibration" Click="OpenCalibration_Click" Appearance="Secondary" HorizontalAlignment="Stretch" Padding="10" FontSize="12" Cursor="Hand">
                                     <ui:Button.Icon>
                                         <ui:SymbolIcon Symbol="Wrench24"/>
@@ -396,6 +437,22 @@
 
                                 <ui:Button Content="SAVE MAP" Click="SaveBtn_Click" Appearance="Primary" Margin="0,0,0,8" HorizontalAlignment="Stretch" Padding="6" FontSize="12" Focusable="False" IsTabStop="False"/>
                                 <ui:Button Content="LOAD MAP" Click="LoadBtn_Click" HorizontalAlignment="Stretch" Padding="6" FontSize="12" Focusable="False" IsTabStop="False"/>
+                            </StackPanel>
+                        </ui:Card>
+                    </StackPanel>
+
+                    <!-- INLINE ZONE PREVIEW VIEW (shown when Zone Preview is activated from Settings) -->
+                    <StackPanel x:Name="SettingsZonePreviewView" Visibility="Collapsed">
+                        <ui:Button Content="← Back to Settings" Click="BackToSettings_Click" Appearance="Secondary" Margin="0,0,0,12" Padding="8,6" FontSize="12" Cursor="Hand"/>
+                        <ui:Card Padding="16" Margin="0,0,0,12">
+                            <StackPanel>
+                                <TextBlock Text="ZONE MAP PREVIEW" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                                <TextBlock Text="Each color represents a different hardware zone. Keys in the same zone share the same color." TextWrapping="Wrap" Opacity="0.6" FontSize="11" Margin="0,0,0,14"/>
+
+
+                                <Border Background="#0E0E0E" CornerRadius="6" Padding="12" Margin="0,0,0,4">
+                                    <Canvas x:Name="ZonePreviewCanvas" Height="210" ClipToBounds="True"/>
+                                </Border>
                             </StackPanel>
                         </ui:Card>
                     </StackPanel>

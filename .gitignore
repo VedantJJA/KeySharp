@@ -52,3 +52,10 @@ Modern .NET uses global cache, but this covers local packages folders
 packages/
 *.nuget.props
 *.nuget.targets
+
+# Logs and temporary files
+*.log
+[Dd]ebug_log.txt
+
+# Scratch folder
+scratch/

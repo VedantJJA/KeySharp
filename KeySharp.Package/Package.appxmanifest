@@ -1,11 +1,12 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap uap3 rescap">
-	<Identity Name="AmpX.KeySharp" Publisher="CN=8DA23FE4-BF21-49AC-8FD3-570500EA074F" Version="1.0.18.0" />
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  IgnorableNamespaces="uap uap3 rescap desktop">
+	<Identity Name="AmpX.KeySharp" Publisher="CN=8DA23FE4-BF21-49AC-8FD3-570500EA074F" Version="1.2.19.0" />
 	<Properties>
 		<DisplayName>KeySharp</DisplayName>
 		<PublisherDisplayName>AmpX</PublisherDisplayName>
@@ -34,6 +35,9 @@
 				<uap3:Extension Category="windows.appExtension">
 					<uap3:AppExtension Name="com.microsoft.windows.lighting" Id="KeySharpRGB" DisplayName="KeySharp" PublicFolder="Public" />
 				</uap3:Extension>
+				<desktop:Extension Category="windows.startupTask" Executable="KeySharp\KeySharp.exe" EntryPoint="Windows.FullTrustApplication">
+					<desktop:StartupTask TaskId="KeySharpStartupTask" Enabled="false" DisplayName="KeySharp Pro" />
+				</desktop:Extension>
 			</Extensions>
 		</Application>
 	</Applications>

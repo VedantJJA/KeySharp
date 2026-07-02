@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -22,7 +23,8 @@ namespace KeySharp
         PerKeyRipple = 4,
         MapTest = 5,
         Calibration = 6,
-        MusicSync = 7
+        MusicSync = 7,
+        ScreenMirror = 8
     }
 
     public class SequentialWave
@@ -40,6 +42,7 @@ namespace KeySharp
     {
         private LampArray? _lampArray;
         private LightMode _currentMode = LightMode.Static;
+        private LightMode _lastUserMode = LightMode.Static;
         private WinUIColor _currentColor = WinUIColor.FromArgb(255, 0, 122, 255);
         private Random _rng = new Random();
 
@@ -88,25 +91,51 @@ namespace KeySharp
         private WinUIColor[] _calibColorsCache = Array.Empty<WinUIColor>();
         private int[] _calibIndicesCache = Array.Empty<int>();
 
+        // Screen Mirroring variables
+        private (double X, double Y)[] _lampPositions = Array.Empty<(double X, double Y)>();
+        private Bitmap? _screenBmp;
+        private Graphics? _screenGraphics;
+        private Bitmap? _smallBmp;
+        private Graphics? _smallGraphics;
+        private int _selectedScreenIndex = 0;
+        private int _screenMirrorSpeedMs = 33; // 30 FPS default
+        private DateTime _lastScreenMirrorFrame = DateTime.Now;
+        private int _consecutiveWriteErrors = 0;
+        private WinUIColor[] _currentLampColors = Array.Empty<WinUIColor>();
+        private bool _isScreenMirrorHighContrast = false;
+
         private static readonly string _appDataFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "KeySharp");
         private static readonly string _configPath = Path.Combine(_appDataFolder, "last_map_config.txt");
         private static readonly string _cachedMapPath = Path.Combine(_appDataFolder, "keymap_cache.csv");
+        private static readonly string _settingsPath = Path.Combine(_appDataFolder, "settings.txt");
 
         // Fired when the LampArray is loaded so the UI can populate available zones dynamically
         public Action? OnHardwareConnected;
         public Action? OnDeviceNotFound;
 
-        public async Task InitializeAsync()
+        public async Task InitializeAsync(bool delayHardwareInit = false)
         {
             try
             {
+                LoadSettings();
+
+                if (delayHardwareInit)
+                {
+                    await Task.Delay(3000);
+                }
+
                 await AttemptReconnectAsync();
+
                 InitializeAudio();
+
                 LoadMap();
 
                 _ = Task.Run(() => RenderLoopAsync(_cts.Token), _cts.Token);
             }
-            catch (Exception ex) { Console.WriteLine("Init Error: " + ex.Message); }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"RGBEngine InitializeAsync Error: {ex.Message}");
+            }
         }
 
         private async Task AttemptReconnectAsync()
@@ -114,15 +143,19 @@ namespace KeySharp
             try
             {
                 string selector = LampArray.GetDeviceSelector();
-                var devices = await DeviceInformation.FindAllAsync(selector);
+                var devices = await FindAllDevicesWithTimeoutAsync(selector, 5000);
                 if (devices.Count > 0)
                 {
-                    var newLamp = await LampArray.FromIdAsync(devices[0].Id);
+                    var newLamp = await FromIdWithTimeoutAsync(devices[0].Id, 5000);
 
                     lock (_hwLock)
                     {
                         _lampArray = newLamp;
-                        _lampArray?.SetColor(WinUIColor.FromArgb(255, 0, 0, 0));
+                        if (_lampArray != null)
+                        {
+                            _lampArray.SetColor(WinUIColor.FromArgb(255, 0, 0, 0));
+                            InitializeLampPositions();
+                        }
                     }
                     _connectedDeviceName = devices[0].Name;
                     UpdateHardwareColor();
@@ -136,7 +169,7 @@ namespace KeySharp
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Reconnect attempt failed: {ex.Message}");
+                Console.WriteLine($"AttemptReconnectAsync Error: {ex.Message}");
             }
             finally
             {
@@ -151,6 +184,7 @@ namespace KeySharp
                 _cts.Cancel();
                 _capture?.StopRecording();
                 _capture?.Dispose();
+                ReleaseScreenMirrorResources();
             }
             catch { }
         }
@@ -215,6 +249,7 @@ namespace KeySharp
             {
                 _beatThreshold = _minThresholdFloor;
             }
+            SaveSettings();
         }
 
         private void TriggerRandomRipple()
@@ -263,9 +298,20 @@ namespace KeySharp
             _activeRipples.Clear();
             _rippleColors.Clear();
 
+            // Track last user-facing mode (not tool modes) for settings persistence
+            if (mode != LightMode.MapTest && mode != LightMode.Calibration)
+            {
+                _lastUserMode = mode;
+            }
+
             lock (_wavesLock)
             {
                 _activeWaves.Clear();
+            }
+
+            if (mode != LightMode.ScreenMirror)
+            {
+                ReleaseScreenMirrorResources();
             }
 
             try
@@ -273,19 +319,26 @@ namespace KeySharp
                 lock (_hwLock)
                 {
                     _lampArray?.SetColor(WinUIColor.FromArgb(255, 0, 0, 0));
+                    if (_lampArray != null)
+                    {
+                        int count = _lampArray.LampCount;
+                        if (_currentLampColors.Length != count) _currentLampColors = new WinUIColor[count];
+                        for (int i = 0; i < count; i++) _currentLampColors[i] = WinUIColor.FromArgb(255, 0, 0, 0);
+                    }
                 }
                 if (mode == LightMode.Static) UpdateHardwareColor();
             }
             catch { }
+            SaveSettings();
         }
 
-        public void SetBrightness(double val) { _globalBrightness = val / 100.0; if (_currentMode == LightMode.Static) UpdateHardwareColor(); }
-        public void SetBounce(bool enabled) => _isBounceEnabled = enabled;
-        public void SetMaxSteps(int steps) => _maxWaveSteps = steps;
-        public void SetRippleWidth(int width) => _rippleWidth = width;
-        public void SetSpeed(int ms) => _waveSpeedMs = ms;
-        public void SetRainbowSpread(double val) => _rainbowSpread = val;
-        public void SetRainbowSpeed(int ms) => _rainbowSpeedMs = ms;
+        public void SetBrightness(double val) { _globalBrightness = val / 100.0; if (_currentMode == LightMode.Static) UpdateHardwareColor(); SaveSettings(); }
+        public void SetBounce(bool enabled) { _isBounceEnabled = enabled; SaveSettings(); }
+        public void SetMaxSteps(int steps) { _maxWaveSteps = steps; SaveSettings(); }
+        public void SetRippleWidth(int width) { _rippleWidth = width; SaveSettings(); }
+        public void SetSpeed(int ms) { _waveSpeedMs = ms; SaveSettings(); }
+        public void SetRainbowSpread(double val) { _rainbowSpread = val; SaveSettings(); }
+        public void SetRainbowSpeed(int ms) { _rainbowSpeedMs = ms; SaveSettings(); }
         public void SetSettingsActive(bool active)
         {
             _isSettingsActive = active;
@@ -296,6 +349,12 @@ namespace KeySharp
                     lock (_hwLock)
                     {
                         _lampArray?.SetColor(WinUIColor.FromArgb(255, 0, 0, 0));
+                        if (_lampArray != null)
+                        {
+                            int count = _lampArray.LampCount;
+                            if (_currentLampColors.Length != count) _currentLampColors = new WinUIColor[count];
+                            for (int i = 0; i < count; i++) _currentLampColors[i] = WinUIColor.FromArgb(255, 0, 0, 0);
+                        }
                     }
                 }
                 catch { }
@@ -308,7 +367,7 @@ namespace KeySharp
                 }
             }
         }
-        public void SetColor(byte r, byte g, byte b) { _currentColor = WinUIColor.FromArgb(255, r, g, b); if (_currentMode == LightMode.Static) UpdateHardwareColor(); }
+        public void SetColor(byte r, byte g, byte b) { _currentColor = WinUIColor.FromArgb(255, r, g, b); if (_currentMode == LightMode.Static) UpdateHardwareColor(); SaveSettings(); }
 
         public void TriggerKeyPress(int vkCode)
         {
@@ -337,6 +396,15 @@ namespace KeySharp
                         {
                             _lampArray?.SetColor(WinUIColor.FromArgb(255, 0, 0, 0));
                             _lampArray?.SetColorsForIndices(testZones.Select(_ => bColor).ToArray(), testZones);
+                            
+                            // Update cache
+                            if (_lampArray != null)
+                            {
+                                int count = _lampArray.LampCount;
+                                if (_currentLampColors.Length != count) _currentLampColors = new WinUIColor[count];
+                                for (int i = 0; i < count; i++) _currentLampColors[i] = WinUIColor.FromArgb(255, 0, 0, 0);
+                                for (int i = 0; i < testZones.Length; i++) _currentLampColors[testZones[i]] = bColor;
+                            }
                         }
                     }
                     return;
@@ -456,7 +524,17 @@ namespace KeySharp
                         ProcessSequentialWaves();
                         RenderRippleFading();
                     }
+                    if (_currentMode == LightMode.ScreenMirror)
+                    {
+                        if ((DateTime.Now - _lastScreenMirrorFrame).TotalMilliseconds >= _screenMirrorSpeedMs)
+                        {
+                            RenderScreenMirror();
+                            _lastScreenMirrorFrame = DateTime.Now;
+                        }
+                    }
                     if (_currentMode == LightMode.Calibration) RenderCalibrationFrame();
+
+                    _consecutiveWriteErrors = 0;
 
                     // Use minimum delay of 5ms for responsive rendering
                     await Task.Delay(5, token);
@@ -468,7 +546,15 @@ namespace KeySharp
                 catch (Exception ex)
                 {
                     Console.WriteLine($"Hardware Write Error: {ex.Message}");
-                    // Do not nullify _lampArray on every exception or standard access violations will drop connection
+                    _consecutiveWriteErrors++;
+                    if (_consecutiveWriteErrors >= 5)
+                    {
+                        lock (_hwLock)
+                        {
+                            _lampArray = null;
+                        }
+                        _consecutiveWriteErrors = 0;
+                    }
                 }
             }
         }
@@ -534,6 +620,7 @@ namespace KeySharp
                 lock (_hwLock)
                 {
                     _lampArray?.SetColorsForIndices(new[] { WinUIColor.FromArgb(255, r, g, b) }, new[] { item.Key });
+                    UpdateCurrentLampColorsCache(new[] { WinUIColor.FromArgb(255, r, g, b) }, new[] { item.Key });
                 }
 
                 _activeRipples[item.Key] -= 0.04;
@@ -543,6 +630,7 @@ namespace KeySharp
                     lock (_hwLock)
                     {
                         _lampArray?.SetColorsForIndices(new[] { WinUIColor.FromArgb(255, 0, 0, 0) }, new[] { item.Key });
+                        UpdateCurrentLampColorsCache(new[] { WinUIColor.FromArgb(255, 0, 0, 0) }, new[] { item.Key });
                     }
                 }
             }
@@ -552,6 +640,12 @@ namespace KeySharp
         public void BackCalibration() => _calibrationIndex = (_calibrationIndex - 1 + (_lampArray?.LampCount ?? 1)) % (_lampArray?.LampCount ?? 1);
         public int GetCurrentZoneIndex() => _calibrationIndex;
         public string GetCurrentZoneInfo() => _calibrationMap.TryGetValue(_calibrationIndex, out var keys) && keys.Count > 0 ? string.Join(", ", keys) : "None";
+
+        /// <summary>Returns a snapshot of the full zone-to-VK-codes calibration map for UI preview.</summary>
+        public Dictionary<int, List<int>> GetCalibrationMap()
+        {
+            return _calibrationMap.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToList());
+        }
 
         public void SaveMap(string? path = null)
         {
@@ -640,6 +734,7 @@ namespace KeySharp
             lock (_hwLock)
             {
                 _lampArray?.SetColorsForIndices(colors, indices);
+                UpdateCurrentLampColorsCache(colors, indices);
             }
         }
 
@@ -668,6 +763,7 @@ namespace KeySharp
             lock (_hwLock)
             {
                 _lampArray?.SetColorsForIndices(_calibColorsCache, _calibIndicesCache);
+                UpdateCurrentLampColorsCache(_calibColorsCache, _calibIndicesCache);
             }
         }
 
@@ -683,7 +779,14 @@ namespace KeySharp
 
                 lock (_hwLock)
                 {
-                    _lampArray?.SetColor(WinUIColor.FromArgb(255, r, g, b));
+                    WinUIColor c = WinUIColor.FromArgb(255, r, g, b);
+                    _lampArray?.SetColor(c);
+                    if (_lampArray != null)
+                    {
+                        int count = _lampArray.LampCount;
+                        if (_currentLampColors.Length != count) _currentLampColors = new WinUIColor[count];
+                        for (int i = 0; i < count; i++) _currentLampColors[i] = c;
+                    }
                 }
             }
             catch { }
@@ -720,6 +823,336 @@ namespace KeySharp
             {
                 return WinUIColor.FromArgb(255, 255, 0, 0);
             }
+        }
+
+        private void InitializeLampPositions()
+        {
+            if (_lampArray == null) return;
+            try
+            {
+                int count = _lampArray.LampCount;
+                _lampPositions = new (double X, double Y)[count];
+
+                float minX = float.MaxValue, maxX = float.MinValue;
+                float minY = float.MaxValue, maxY = float.MinValue;
+
+                var lampInfos = new Windows.Devices.Lights.LampInfo[count];
+                for (int i = 0; i < count; i++)
+                {
+                    var info = _lampArray.GetLampInfo(i);
+                    lampInfos[i] = info;
+                    var pos = info.Position;
+                    if (pos.X < minX) minX = pos.X;
+                    if (pos.X > maxX) maxX = pos.X;
+                    if (pos.Y < minY) minY = pos.Y;
+                    if (pos.Y > maxY) maxY = pos.Y;
+                }
+
+                float width = maxX - minX;
+                float height = maxY - minY;
+
+                for (int i = 0; i < count; i++)
+                {
+                    var pos = lampInfos[i].Position;
+                    double normX = width > 0.001f ? (pos.X - minX) / width : 0.5;
+                    // Invert Y: physical top (larger Y) maps to screen top (normY = 0)
+                    double normY = height > 0.001f ? 1.0 - (pos.Y - minY) / height : 0.5;
+                    _lampPositions[i] = (normX, normY);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"InitializeLampPositions Error: {ex.Message}");
+            }
+        }
+
+        private void CaptureScreenFrame()
+        {
+            try
+            {
+                var screens = System.Windows.Forms.Screen.AllScreens;
+                System.Windows.Forms.Screen? targetScreen = System.Windows.Forms.Screen.PrimaryScreen;
+                if (_selectedScreenIndex > 0 && _selectedScreenIndex - 1 < screens.Length)
+                {
+                    targetScreen = screens[_selectedScreenIndex - 1];
+                }
+
+                if (targetScreen == null)
+                {
+                    if (screens.Length > 0)
+                        targetScreen = screens[0];
+                    else
+                        return;
+                }
+
+                int screenW = targetScreen.Bounds.Width;
+                int screenH = targetScreen.Bounds.Height;
+                int screenX = targetScreen.Bounds.X;
+                int screenY = targetScreen.Bounds.Y;
+
+                if (_screenBmp == null || _screenBmp.Width != screenW || _screenBmp.Height != screenH)
+                {
+                    _screenBmp?.Dispose();
+                    _screenGraphics?.Dispose();
+
+                    _screenBmp = new Bitmap(screenW, screenH, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                    _screenGraphics = Graphics.FromImage(_screenBmp);
+                }
+
+                if (_smallBmp == null)
+                {
+                    _smallBmp = new Bitmap(32, 18, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                    _smallGraphics = Graphics.FromImage(_smallBmp);
+                    _smallGraphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Low;
+                }
+
+                _screenGraphics?.CopyFromScreen(screenX, screenY, 0, 0, new Size(screenW, screenH));
+                _smallGraphics?.DrawImage(_screenBmp, 0, 0, _smallBmp.Width, _smallBmp.Height);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"CaptureScreenFrame Error: {ex.Message}");
+            }
+        }
+
+        private void RenderScreenMirror()
+        {
+            if (_lampArray == null) return;
+            try
+            {
+                CaptureScreenFrame();
+
+                if (_smallBmp == null || _lampPositions.Length != _lampArray.LampCount) return;
+
+                int count = _lampArray.LampCount;
+                int[] indices = new int[count];
+                WinUIColor[] colors = new WinUIColor[count];
+
+                int bmpW = _smallBmp.Width;
+                int bmpH = _smallBmp.Height;
+
+                for (int i = 0; i < count; i++)
+                {
+                    indices[i] = i;
+                    var (normX, normY) = _lampPositions[i];
+
+                    int x = (int)Math.Clamp(normX * (bmpW - 1), 0, bmpW - 1);
+                    int y = (int)Math.Clamp(normY * (bmpH - 1), 0, bmpH - 1);
+
+                    System.Drawing.Color gdiColor = _smallBmp.GetPixel(x, y);
+
+                    double rVal = gdiColor.R;
+                    double gVal = gdiColor.G;
+                    double bVal = gdiColor.B;
+
+                    if (_isScreenMirrorHighContrast)
+                    {
+                        // Apply contrast factor of 1.75 to enhance color vibrancy
+                        double factor = 1.75;
+                        rVal = Math.Clamp((rVal - 128.0) * factor + 128.0, 0.0, 255.0);
+                        gVal = Math.Clamp((gVal - 128.0) * factor + 128.0, 0.0, 255.0);
+                        bVal = Math.Clamp((bVal - 128.0) * factor + 128.0, 0.0, 255.0);
+                    }
+
+                    byte r = (byte)Math.Clamp(rVal * _globalBrightness, 0, 255);
+                    byte g = (byte)Math.Clamp(gVal * _globalBrightness, 0, 255);
+                    byte b = (byte)Math.Clamp(bVal * _globalBrightness, 0, 255);
+
+                    colors[i] = WinUIColor.FromArgb(255, r, g, b);
+                }
+
+                lock (_hwLock)
+                {
+                    _lampArray.SetColorsForIndices(colors, indices);
+                    UpdateCurrentLampColorsCache(colors, indices);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"RenderScreenMirror Error: {ex.Message}");
+            }
+        }
+
+        private void ReleaseScreenMirrorResources()
+        {
+            _screenGraphics?.Dispose();
+            _screenGraphics = null;
+            _screenBmp?.Dispose();
+            _screenBmp = null;
+            _smallGraphics?.Dispose();
+            _smallGraphics = null;
+            _smallBmp?.Dispose();
+            _smallBmp = null;
+        }
+
+        public void SetSelectedScreenIndex(int index)
+        {
+            _selectedScreenIndex = index;
+            SaveSettings();
+        }
+
+        public void SetScreenMirrorSpeedFps(int fps)
+        {
+            int targetFps = Math.Clamp(fps, 1, 60);
+            _screenMirrorSpeedMs = 1000 / targetFps;
+            SaveSettings();
+        }
+
+        public LightMode GetMode() => _currentMode;
+        public LightMode GetLastUserMode() => _lastUserMode;
+        public WinUIColor GetColor() => _currentColor;
+        public WinUIColor[] GetCurrentLampColors()
+        {
+            lock (_hwLock)
+            {
+                return _currentLampColors.ToArray();
+            }
+        }
+
+        private void UpdateCurrentLampColorsCache(WinUIColor[] colors, int[] indices)
+        {
+            if (_lampArray == null) return;
+            int count = _lampArray.LampCount;
+            if (_currentLampColors.Length != count)
+            {
+                _currentLampColors = new WinUIColor[count];
+            }
+            for (int i = 0; i < indices.Length; i++)
+            {
+                int idx = indices[i];
+                if (idx >= 0 && idx < count)
+                {
+                    _currentLampColors[idx] = colors[i];
+                }
+            }
+        }
+        public double GetBrightness() => _globalBrightness;
+        public double GetRainbowSpread() => _rainbowSpread;
+        public int GetRainbowSpeed() => _rainbowSpeedMs;
+        public bool GetBounce() => _isBounceEnabled;
+        public int GetMaxSteps() => _maxWaveSteps;
+        public int GetRippleWidth() => _rippleWidth;
+        public int GetSpeed() => _waveSpeedMs;
+        public int GetSelectedScreenIndex() => _selectedScreenIndex;
+        public int GetScreenMirrorSpeedFps() => 1000 / _screenMirrorSpeedMs;
+        public bool GetScreenMirrorHighContrast() => _isScreenMirrorHighContrast;
+        public void SetScreenMirrorHighContrast(bool enabled)
+        {
+            _isScreenMirrorHighContrast = enabled;
+            SaveSettings();
+        }
+        public double GetBeatSensitivity() => _minThresholdFloor;
+
+        public void SaveSettings()
+        {
+            try
+            {
+                if (!Directory.Exists(_appDataFolder)) Directory.CreateDirectory(_appDataFolder);
+                using (var sw = new StreamWriter(_settingsPath))
+                {
+                    sw.WriteLine($"Mode={(int)_lastUserMode}");
+                    sw.WriteLine($"Color={_currentColor.R},{_currentColor.G},{_currentColor.B}");
+                    sw.WriteLine($"Brightness={_globalBrightness * 100.0}");
+                    sw.WriteLine($"RainbowSpeed={_rainbowSpeedMs}");
+                    sw.WriteLine($"RainbowSpread={_rainbowSpread}");
+                    sw.WriteLine($"WaveSpeed={_waveSpeedMs}");
+                    sw.WriteLine($"MaxWaveSteps={_maxWaveSteps}");
+                    sw.WriteLine($"RippleWidth={_rippleWidth}");
+                    sw.WriteLine($"Bounce={_isBounceEnabled}");
+                    sw.WriteLine($"ScreenIndex={_selectedScreenIndex}");
+                    sw.WriteLine($"ScreenMirrorFps={1000 / _screenMirrorSpeedMs}");
+                    sw.WriteLine($"ScreenMirrorHighContrast={_isScreenMirrorHighContrast}");
+                    sw.WriteLine($"BeatSensitivity={_minThresholdFloor * 100.0}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"SaveSettings Exception: {ex.Message}");
+            }
+        }
+
+        public void LoadSettings()
+        {
+            try
+            {
+                if (!File.Exists(_settingsPath)) return;
+                foreach (var line in File.ReadAllLines(_settingsPath))
+                {
+                    var parts = line.Split('=');
+                    if (parts.Length < 2) continue;
+                    string key = parts[0].Trim();
+                    string val = parts[1].Trim();
+                    switch (key)
+                    {
+                        case "Mode":
+                            _currentMode = (LightMode)int.Parse(val);
+                            _lastUserMode = _currentMode;
+                            break;
+                        case "Color":
+                            var rgb = val.Split(',');
+                            if (rgb.Length == 3)
+                                _currentColor = WinUIColor.FromArgb(255, byte.Parse(rgb[0]), byte.Parse(rgb[1]), byte.Parse(rgb[2]));
+                            break;
+                        case "Brightness":
+                            _globalBrightness = double.Parse(val) / 100.0;
+                            break;
+                        case "RainbowSpeed":
+                            _rainbowSpeedMs = int.Parse(val);
+                            break;
+                        case "RainbowSpread":
+                            _rainbowSpread = double.Parse(val);
+                            break;
+                        case "WaveSpeed":
+                            _waveSpeedMs = int.Parse(val);
+                            break;
+                        case "MaxWaveSteps":
+                            _maxWaveSteps = int.Parse(val);
+                            break;
+                        case "RippleWidth":
+                            _rippleWidth = int.Parse(val);
+                            break;
+                        case "Bounce":
+                            _isBounceEnabled = bool.Parse(val);
+                            break;
+                        case "ScreenIndex":
+                            _selectedScreenIndex = int.Parse(val);
+                            break;
+                        case "ScreenMirrorFps":
+                            int fps = int.Parse(val);
+                            _screenMirrorSpeedMs = 1000 / Math.Clamp(fps, 1, 60);
+                            break;
+                        case "ScreenMirrorHighContrast":
+                            _isScreenMirrorHighContrast = bool.Parse(val);
+                            break;
+                        case "BeatSensitivity":
+                            _minThresholdFloor = (float)(double.Parse(val) / 100.0);
+                            break;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"LoadSettings Exception: {ex.Message}");
+            }
+        }
+        private async Task<DeviceInformationCollection> FindAllDevicesWithTimeoutAsync(string selector, int timeoutMs)
+        {
+            var task = DeviceInformation.FindAllAsync(selector).AsTask();
+            if (await Task.WhenAny(task, Task.Delay(timeoutMs)) == task)
+            {
+                return await task;
+            }
+            throw new TimeoutException("DeviceInformation.FindAllAsync timed out.");
+        }
+
+        private async Task<LampArray?> FromIdWithTimeoutAsync(string id, int timeoutMs)
+        {
+            var task = LampArray.FromIdAsync(id).AsTask();
+            if (await Task.WhenAny(task, Task.Delay(timeoutMs)) == task)
+            {
+                return await task;
+            }
+            throw new TimeoutException("LampArray.FromIdAsync timed out.");
         }
     }
 }

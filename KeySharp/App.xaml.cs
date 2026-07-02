@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
@@ -32,17 +32,74 @@ namespace KeySharp
 
             if (!isNewInstance)
             {
-                if (EventWaitHandle.TryOpenExisting(EventName, out EventWaitHandle existingEvent))
+                if (EventWaitHandle.TryOpenExisting(EventName, out EventWaitHandle? existingEvent))
                 {
-                    existingEvent.Set();
+                    existingEvent?.Set();
                 }
                 Current.Shutdown();
                 return;
             }
 
-            _showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, EventName);
-            _waitThread = new Thread(WaitThreadFunc) { IsBackground = true };
-            _waitThread.Start();
+            try
+            {
+                _showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, EventName);
+                _waitThread = new Thread(WaitThreadFunc) { IsBackground = true };
+                _waitThread.Start();
+            }
+            catch { }
+
+            // Set shutdown mode to explicit since window may start hidden
+            Current.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
+            bool startHidden = false;
+            foreach (var arg in e.Args)
+            {
+                if (arg.Equals("--background", StringComparison.OrdinalIgnoreCase))
+                {
+                    startHidden = true;
+                    break;
+                }
+            }
+
+            if (IsPackaged())
+            {
+                try
+                {
+                    var activatedEventArgs = global::Windows.ApplicationModel.AppInstance.GetActivatedEventArgs();
+                    if (activatedEventArgs != null && 
+                        activatedEventArgs.Kind == global::Windows.ApplicationModel.Activation.ActivationKind.StartupTask)
+                    {
+                        startHidden = true;
+                    }
+                }
+                catch { }
+            }
+
+            var mainWindow = new MainWindow(startHidden);
+            Current.MainWindow = mainWindow;
+
+            if (!startHidden)
+            {
+                mainWindow.Show();
+            }
+            else
+            {
+                // To allow the low-level keyboard hook (WH_KEYBOARD_LL) to receive callbacks,
+                // the WPF Dispatcher's message pump needs to start with at least one visible window.
+                // If we immediately hide the window, the OS may not fully hook up the thread's input queue.
+                // By positioning the window offscreen (-10000, -10000) and disabling the taskbar/activation,
+                // we keep it technically "visible" to the Win32 window manager without displaying anything to the user.
+                try
+                {
+                    mainWindow.WindowStartupLocation = WindowStartupLocation.Manual;
+                    mainWindow.Left = -10000;
+                    mainWindow.Top = -10000;
+                    mainWindow.ShowInTaskbar = false;
+                    mainWindow.ShowActivated = false;
+                    mainWindow.Show();
+                }
+                catch { }
+            }
 
             base.OnStartup(e);
         }
@@ -51,21 +108,40 @@ namespace KeySharp
         {
             while (true)
             {
-                if (_showEvent?.WaitOne() == true)
+                try
                 {
-                    Current.Dispatcher.BeginInvoke(new Action(() =>
+                    if (_showEvent?.WaitOne() == true)
                     {
-                        var mainWindow = Current.MainWindow;
-                        if (mainWindow != null)
+                        Current.Dispatcher.BeginInvoke(new Action(() =>
                         {
-                            mainWindow.Show();
-                            mainWindow.WindowState = WindowState.Normal;
-                            mainWindow.Activate();
-                            mainWindow.Topmost = true;  
-                            mainWindow.Topmost = false; 
-                        }
-                    }));
+                            try
+                            {
+                                var mainWindow = Current.MainWindow as MainWindow;
+                                if (mainWindow != null)
+                                {
+                                    mainWindow.RestoreWindow();
+                                }
+                            }
+                            catch { }
+                        }));
+                    }
                 }
+                catch
+                {
+                    Thread.Sleep(1000); // Prevent tight loop in case of continuous exceptions
+                }
+            }
+        }
+
+        private bool IsPackaged()
+        {
+            try
+            {
+                return global::Windows.ApplicationModel.Package.Current != null;
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
             }
         }
     }

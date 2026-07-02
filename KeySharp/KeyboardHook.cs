@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -23,47 +23,60 @@ namespace KeySharp
 
         public static void Start()
         {
-            _hookID = SetHook(_proc);
+            try
+            {
+                _hookID = SetHook(_proc);
+            }
+            catch { }
         }
 
         public static void Stop()
         {
-            UnhookWindowsHookEx(_hookID);
-            _pressedKeys.Clear();
+            try
+            {
+                if (_hookID != IntPtr.Zero)
+                {
+                    UnhookWindowsHookEx(_hookID);
+                    _hookID = IntPtr.Zero;
+                }
+                _pressedKeys.Clear();
+            }
+            catch { }
         }
 
         private static IntPtr SetHook(LowLevelKeyboardProc proc)
         {
-            using (Process curProcess = Process.GetCurrentProcess())
-            using (ProcessModule curModule = curProcess.MainModule!)
-            {
-                return SetWindowsHookEx(WH_KEYBOARD_LL, proc, GetModuleHandle(curModule.ModuleName), 0);
-            }
+            IntPtr hMod = GetModuleHandle(null);
+            return SetWindowsHookEx(WH_KEYBOARD_LL, proc, hMod, 0);
         }
 
         private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
 
         private static IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
         {
-            if (nCode >= 0)
+            try
             {
-                int vkCode = Marshal.ReadInt32(lParam);
-
-                if (wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_SYSKEYDOWN)
+                if (nCode >= 0)
                 {
-                    // Debounce: Only trigger if it wasn't already held down
-                    if (!_pressedKeys.Contains(vkCode))
+                    int vkCode = Marshal.ReadInt32(lParam);
+
+                    if (wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_SYSKEYDOWN)
                     {
-                        _pressedKeys.Add(vkCode);
-                        OnKeyPressed?.Invoke(vkCode);
+                        // Debounce: Only trigger if it wasn't already held down
+                        if (!_pressedKeys.Contains(vkCode))
+                        {
+                            _pressedKeys.Add(vkCode);
+                            OnKeyPressed?.Invoke(vkCode);
+                        }
+                    }
+                    else if (wParam == (IntPtr)WM_KEYUP || wParam == (IntPtr)WM_SYSKEYUP)
+                    {
+                        // Remove from tracking when finger lifted
+                        _pressedKeys.Remove(vkCode);
                     }
                 }
-                else if (wParam == (IntPtr)WM_KEYUP || wParam == (IntPtr)WM_SYSKEYUP)
-                {
-                    // Remove from tracking when finger lifted
-                    _pressedKeys.Remove(vkCode);
-                }
             }
+            catch { }
             return CallNextHookEx(_hookID, nCode, wParam, lParam);
         }
 
@@ -78,6 +91,6 @@ namespace KeySharp
         private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
 
         [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-        private static extern IntPtr GetModuleHandle(string lpModuleName);
+        private static extern IntPtr GetModuleHandle(string? lpModuleName);
     }
 }

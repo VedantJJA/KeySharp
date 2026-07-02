@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
@@ -55,23 +57,47 @@ namespace KeySharp
         private int _currentSetupStep = 1;
         private int _maxSetupSteps = 0;
 
-        public MainWindow()
+        // Zone Preview Live Mirroring
+        private List<System.Windows.Controls.Border> _previewBars = new List<System.Windows.Controls.Border>();
+        private System.Windows.Threading.DispatcherTimer? _previewTimer;
+
+        public MainWindow(bool startHidden = false)
         {
             InitializeComponent();
 
             _engine = new RGBEngine();
             SetupTrayIcon();
 
+            bool delayInit = startHidden;
+            if (!delayInit)
+            {
+                string[] args = Environment.GetCommandLineArgs();
+                foreach (var arg in args)
+                {
+                    if (arg.Equals("--background", StringComparison.OrdinalIgnoreCase))
+                    {
+                        delayInit = true;
+                        break;
+                    }
+                }
+            }
+
             // Wire up Hardware connection event to UI FIRST so it populates the dynamic zone count
             _engine.OnHardwareConnected = () =>
             {
                 Application.Current?.Dispatcher?.BeginInvoke(new Action(() =>
                 {
-                    PopulateZoneDropdown();
-                    if (DeviceStatusText != null)
+                    try
                     {
-                        DeviceStatusText.Text = _engine.ConnectedDeviceName;
-                        DeviceStatusText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.Green);
+                        PopulateZoneDropdown();
+                        if (DeviceStatusText != null)
+                        {
+                            DeviceStatusText.Text = _engine.ConnectedDeviceName;
+                            DeviceStatusText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.Green);
+                        }
+                    }
+                    catch
+                    {
                     }
                 }));
             };
@@ -80,22 +106,42 @@ namespace KeySharp
             {
                 Application.Current?.Dispatcher?.BeginInvoke(new Action(() =>
                 {
-                    if (DeviceStatusText != null)
+                    try
                     {
-                        DeviceStatusText.Text = "None Detected";
-                        DeviceStatusText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.Red);
+                        if (DeviceStatusText != null)
+                        {
+                            DeviceStatusText.Text = "None Detected";
+                            DeviceStatusText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.Red);
+                        }
+                        if (!_hasShownDeviceNotFoundPopup)
+                        {
+                            _hasShownDeviceNotFoundPopup = true;
+                            MessageBox.Show("No supported RGB keyboard detected. Please ensure your device is connected and supports Windows Dynamic Lighting.", "Device Not Found", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        }
                     }
-                    if (!_hasShownDeviceNotFoundPopup)
+                    catch
                     {
-                        _hasShownDeviceNotFoundPopup = true;
-                        MessageBox.Show("No supported RGB keyboard detected. Please ensure your device is connected and supports Windows Dynamic Lighting.", "Device Not Found", MessageBoxButton.OK, MessageBoxImage.Warning);
                     }
                 }));
             };
 
-            _ = _engine.InitializeAsync();
+            _ = _engine.InitializeAsync(delayInit);
 
-            KeyboardHook.Start();
+            if (delayInit)
+            {
+                // Delay starting the keyboard hook on startup to allow keyboard drivers & session to initialize fully
+                System.Threading.Tasks.Task.Delay(5000).ContinueWith(_ =>
+                {
+                    Application.Current?.Dispatcher?.BeginInvoke(new Action(() =>
+                    {
+                        KeyboardHook.Start();
+                    }));
+                });
+            }
+            else
+            {
+                KeyboardHook.Start();
+            }
             KeyboardHook.OnKeyPressed += (vk) =>
             {
                 try
@@ -125,24 +171,18 @@ namespace KeySharp
 
             _isLoaded = true;
 
-            // Initialize Custom Color Picker (Default Blue)
-            _isUpdatingUI = true;
-            _currentH = 211;
-            _currentS = 1.0;
-            _currentV = 1.0;
-            HueSlider.Value = _currentH;
-            UpdateCanvasThumbs();
-            SyncColorFromHSV();
-            _isUpdatingUI = false;
-
-            UpdateCalibrationUI();
-            UpdateModeTitle();
+            // Initialize UI from saved engine settings
+            SyncUIWithEngineSettings();
 
             // Initialize auto-start toggle from registry
             InitializeAutoStartToggle();
 
             // Check if KeySharp has top priority in Windows Dynamic Lighting settings (Handled by the interactive tour now)
-            // CheckDynamicLightingPriority();
+            // Check if KeySharp has top priority in Windows Dynamic Lighting settings (only if launched in foreground)
+            if (!delayInit)
+            {
+                CheckDynamicLightingPriority();
+            }
 
             // Run first time setup check
             CheckFirstRun();
@@ -336,6 +376,7 @@ namespace KeySharp
                         if (SettingsMainView != null) SettingsMainView.Visibility = Visibility.Visible;
                         if (SettingsCalibrationView != null) SettingsCalibrationView.Visibility = Visibility.Collapsed;
                         if (SettingsMapTestView != null) SettingsMapTestView.Visibility = Visibility.Collapsed;
+                        if (SettingsZonePreviewView != null) SettingsZonePreviewView.Visibility = Visibility.Collapsed;
 
                         target = ManagePriorityBtn;
                         TourIcon.Symbol = Wpf.Ui.Controls.SymbolRegular.Important24;
@@ -352,6 +393,7 @@ namespace KeySharp
                         {
                             SettingsMainView.Visibility = Visibility.Visible;
                             SettingsCalibrationView.Visibility = Visibility.Collapsed;
+                            if (SettingsZonePreviewView != null) SettingsZonePreviewView.Visibility = Visibility.Collapsed;
                         }
 
                         target = OpenCalibrationBtn;
@@ -519,6 +561,7 @@ namespace KeySharp
                 _engine.SetSettingsActive(false);
                 if (SettingsMainView != null) SettingsMainView.Visibility = Visibility.Visible;
                 if (SettingsCalibrationView != null) SettingsCalibrationView.Visibility = Visibility.Collapsed;
+                if (SettingsZonePreviewView != null) SettingsZonePreviewView.Visibility = Visibility.Collapsed;
 
                 if (ModeListBox != null && ModeListBox.SelectedIndex == -1)
                     ModeListBox.SelectedIndex = 0;
@@ -536,7 +579,10 @@ namespace KeySharp
                 _trayIcon = new WinForms.NotifyIcon();
                 _trayIcon.Text = "KeySharp Pro";
                 _trayIcon.Visible = true;
-                _trayIcon.DoubleClick += (s, e) => RestoreWindow();
+                _trayIcon.DoubleClick += (s, e) =>
+                {
+                    RestoreWindow();
+                };
 
                 // Load high-quality tray icon from app.png resource
                 try
@@ -563,51 +609,67 @@ namespace KeySharp
                 var contextMenu = new WinForms.ContextMenuStrip();
 
                 var openItem = new WinForms.ToolStripMenuItem("Open KeySharp Pro");
-                openItem.Click += (s, e) => RestoreWindow();
+                openItem.Click += (s, e) =>
+                {
+                    RestoreWindow();
+                };
                 contextMenu.Items.Add(openItem);
                 contextMenu.Items.Add(new WinForms.ToolStripSeparator());
+                
                 var exitItem = new WinForms.ToolStripMenuItem("Exit");
-                exitItem.Click += (s, e) => ExitApplication();
+                exitItem.Click += (s, e) =>
+                {
+                    ExitApplication();
+                };
                 contextMenu.Items.Add(exitItem);
 
                 _trayIcon.ContextMenuStrip = contextMenu;
             }
-            catch (Exception ex) { Console.WriteLine($"Tray setup failed: {ex.Message}"); }
+            catch
+            {
+            }
         }
 
-        private void RestoreWindow()
+        public void RestoreWindow()
         {
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.BeginInvoke(new Action(RestoreWindow));
+                return;
+            }
             try
             {
+                
+                // Centering the window to recover it from potential off-screen starting coordinates (-10000)
+                double screenWidth = SystemParameters.PrimaryScreenWidth;
+                double screenHeight = SystemParameters.PrimaryScreenHeight;
+                double w = this.Width > 0 ? this.Width : 780;
+                double h = this.Height > 0 ? this.Height : 550;
+                this.Left = (screenWidth - w) / 2;
+                this.Top = (screenHeight - h) / 2;
+
+                // Ensure properties allow window to be seen
+                this.ShowInTaskbar = true;
                 this.Show();
                 this.WindowState = WindowState.Normal;
                 this.Activate();
 
-                // Re-enable settings blackout only if settings tab is active
-                if (SettingsListBox != null && SettingsListBox.SelectedIndex == 0)
-                {
-                    _engine.SetSettingsActive(true);
-                }
+                // Bring to foreground
+                this.Topmost = true;
+                this.Topmost = false;
+
+
+                // Check Dynamic Lighting priority when user restores window
+                CheckDynamicLightingPriority();
             }
-            catch { }
+            catch
+            {
+            }
         }
 
         protected override void OnStateChanged(EventArgs e)
         {
             base.OnStateChanged(e);
-            if (this.WindowState == WindowState.Minimized)
-            {
-                // Temporarily disable settings blackout so mode continues running in background
-                _engine.SetSettingsActive(false);
-            }
-            else if (this.WindowState == WindowState.Normal)
-            {
-                // Re-enable settings blackout only if settings tab is active
-                if (SettingsListBox != null && SettingsListBox.SelectedIndex == 0)
-                {
-                    _engine.SetSettingsActive(true);
-                }
-            }
         }
 
         protected override void OnClosing(CancelEventArgs e)
@@ -616,8 +678,7 @@ namespace KeySharp
             {
                 e.Cancel = true;
                 this.Hide();
-                // Temporarily disable settings blackout so mode continues running in background
-                _engine.SetSettingsActive(false);
+                StopPreviewTimer();
             }
             else
             {
@@ -637,6 +698,11 @@ namespace KeySharp
 
         private void ExitApplication()
         {
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.BeginInvoke(new Action(ExitApplication));
+                return;
+            }
             try
             {
                 _isExplicitClose = true;
@@ -670,7 +736,7 @@ namespace KeySharp
                 if (MainContentPanel != null) MainContentPanel.Visibility = Visibility.Visible;
                 if (SettingsContentPanel != null) SettingsContentPanel.Visibility = Visibility.Collapsed;
 
-                // Map sidebar indices to LightMode: 0=Static, 1=RainbowWave, 2=Ripple (sub-type from combo), 3=MusicSync
+                // Map sidebar indices to LightMode: 0=Static, 1=RainbowWave, 2=Ripple (sub-type from combo), 3=MusicSync, 4=ScreenMirror
                 LightMode mode;
                 switch (idx)
                 {
@@ -678,6 +744,7 @@ namespace KeySharp
                     case 1: mode = LightMode.RainbowWave; break;
                     case 2: mode = GetRippleModeFromCombo(); break;
                     case 3: mode = LightMode.MusicSync; break;
+                    case 4: mode = LightMode.ScreenMirror; break;
                     default: mode = LightMode.Static; break;
                 }
 
@@ -686,20 +753,8 @@ namespace KeySharp
                 _engine.SetMode(mode);
                 UpdateModeTitle();
 
-                if (MusicPanel != null)
-                    MusicPanel.Visibility = (mode == LightMode.MusicSync) ? Visibility.Visible : Visibility.Collapsed;
-
-                if (RainbowPanel != null)
-                    RainbowPanel.Visibility = (mode == LightMode.RainbowWave) ? Visibility.Visible : Visibility.Collapsed;
-
-                if (RipplePanel != null)
-                    RipplePanel.Visibility = (idx == 2 || mode == LightMode.MusicSync) ? Visibility.Visible : Visibility.Collapsed;
-
-                if (RippleTypeRow != null)
-                    RippleTypeRow.Visibility = (mode == LightMode.MusicSync) ? Visibility.Collapsed : Visibility.Visible;
-
-                if (ColorPanel != null)
-                    ColorPanel.Visibility = (mode == LightMode.Static || mode == LightMode.FixedRipple) ? Visibility.Visible : Visibility.Collapsed;
+                UpdatePanelVisibilities(mode, idx);
+                StopPreviewTimer();
             }
             catch (Exception ex) { Console.WriteLine($"Selection Change Error: {ex.Message}"); }
         }
@@ -717,16 +772,16 @@ namespace KeySharp
 
                 // Reset to settings main view when navigating to settings tab
                 _settingsToolMode = null;
-                _engine.SetSettingsActive(true);
-                _engine.SetMode(LightMode.Static);
 
                 if (SettingsMainView != null) SettingsMainView.Visibility = Visibility.Visible;
                 if (SettingsMapTestView != null) SettingsMapTestView.Visibility = Visibility.Collapsed;
                 if (SettingsCalibrationView != null) SettingsCalibrationView.Visibility = Visibility.Collapsed;
+                if (SettingsZonePreviewView != null) SettingsZonePreviewView.Visibility = Visibility.Collapsed;
                 if (SettingsTitle != null) SettingsTitle.Text = "SETTINGS";
 
                 if (MainContentPanel != null) MainContentPanel.Visibility = Visibility.Collapsed;
                 if (SettingsContentPanel != null) SettingsContentPanel.Visibility = Visibility.Visible;
+                StopPreviewTimer();
             }
             catch (Exception ex) { Console.WriteLine($"Settings Selection Error: {ex.Message}"); }
         }
@@ -835,7 +890,7 @@ namespace KeySharp
 
         #endregion
 
-        #region Settings Tools (Map Test / Calibration)
+        #region Settings Tools (Map Test / Calibration / Zone Preview)
 
         private void OpenMapTest_Click(object sender, RoutedEventArgs e)
         {
@@ -847,6 +902,7 @@ namespace KeySharp
             if (SettingsMainView != null) SettingsMainView.Visibility = Visibility.Collapsed;
             if (SettingsMapTestView != null) SettingsMapTestView.Visibility = Visibility.Visible;
             if (SettingsCalibrationView != null) SettingsCalibrationView.Visibility = Visibility.Collapsed;
+            if (SettingsZonePreviewView != null) SettingsZonePreviewView.Visibility = Visibility.Collapsed;
             if (SettingsTitle != null) SettingsTitle.Text = "MAP TEST MODE";
         }
 
@@ -861,68 +917,153 @@ namespace KeySharp
             if (SettingsMainView != null) SettingsMainView.Visibility = Visibility.Collapsed;
             if (SettingsMapTestView != null) SettingsMapTestView.Visibility = Visibility.Collapsed;
             if (SettingsCalibrationView != null) SettingsCalibrationView.Visibility = Visibility.Visible;
+            if (SettingsZonePreviewView != null) SettingsZonePreviewView.Visibility = Visibility.Collapsed;
             if (SettingsTitle != null) SettingsTitle.Text = "HARDWARE CALIBRATION";
+        }
+
+        private void OpenZonePreview_Click(object sender, RoutedEventArgs e)
+        {
+            _settingsToolMode = null;
+
+            if (SettingsMainView != null) SettingsMainView.Visibility = Visibility.Collapsed;
+            if (SettingsMapTestView != null) SettingsMapTestView.Visibility = Visibility.Collapsed;
+            if (SettingsCalibrationView != null) SettingsCalibrationView.Visibility = Visibility.Collapsed;
+            if (SettingsZonePreviewView != null) SettingsZonePreviewView.Visibility = Visibility.Visible;
+            if (SettingsTitle != null) SettingsTitle.Text = "ZONE MAP PREVIEW";
+
+            RenderZonePreview();
+            StartPreviewTimer();
         }
 
         private void BackToSettings_Click(object sender, RoutedEventArgs e)
         {
-            // Restore settings black-out mode
+            // Return to main settings view and restore last active lighting mode
             _settingsToolMode = null;
-            _engine.SetSettingsActive(true);
-            _engine.SetMode(LightMode.Static);
+            _engine.SetSettingsActive(false);
+
+            // Restore the last active user mode from saved settings
+            LightMode savedMode = _engine.GetLastUserMode();
+            _engine.SetMode(savedMode);
 
             if (SettingsMainView != null) SettingsMainView.Visibility = Visibility.Visible;
             if (SettingsMapTestView != null) SettingsMapTestView.Visibility = Visibility.Collapsed;
             if (SettingsCalibrationView != null) SettingsCalibrationView.Visibility = Visibility.Collapsed;
+            if (SettingsZonePreviewView != null) SettingsZonePreviewView.Visibility = Visibility.Collapsed;
             if (SettingsTitle != null) SettingsTitle.Text = "SETTINGS";
+            StopPreviewTimer();
         }
 
         #endregion
 
         #region Auto-Start
 
-        private void InitializeAutoStartToggle()
+        private bool IsPackaged()
         {
             try
             {
-                using (var key = WinRegistry.CurrentUser.OpenSubKey(AutoStartRegistryKey, false))
+                return global::Windows.ApplicationModel.Package.Current != null;
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
+            }
+        }
+
+        private async void InitializeAutoStartToggle()
+        {
+            try
+            {
+                if (IsPackaged())
                 {
-                    if (key != null)
+                    var startupTask = await global::Windows.ApplicationModel.StartupTask.GetAsync("KeySharpStartupTask");
+                    if (AutoStartToggle != null)
                     {
-                        var val = key.GetValue(AutoStartValueName);
-                        if (AutoStartToggle != null)
-                            AutoStartToggle.IsChecked = val != null;
+                        AutoStartToggle.IsChecked = (startupTask.State == global::Windows.ApplicationModel.StartupTaskState.Enabled ||
+                                                     startupTask.State == global::Windows.ApplicationModel.StartupTaskState.EnabledByPolicy);
+                    }
+
+                    // Clean up any legacy registry run key
+                    try
+                    {
+                        using (var key = WinRegistry.CurrentUser.OpenSubKey(AutoStartRegistryKey, true))
+                        {
+                            if (key != null && key.GetValue(AutoStartValueName) != null)
+                            {
+                                key.DeleteValue(AutoStartValueName, false);
+                            }
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+                else
+                {
+                    // Clean up and delete registry auto-start run key if it exists
+                    try
+                    {
+                        using (var key = WinRegistry.CurrentUser.OpenSubKey(AutoStartRegistryKey, true))
+                        {
+                            if (key != null && key.GetValue(AutoStartValueName) != null)
+                            {
+                                key.DeleteValue(AutoStartValueName, false);
+                            }
+                        }
+                    }
+                    catch
+                    {
+                    }
+
+                    if (AutoStartToggle != null)
+                    {
+                        AutoStartToggle.IsChecked = false;
+                        AutoStartToggle.IsEnabled = false;
+                        AutoStartToggle.Content = "Launch on Startup (Packaged version only)";
                     }
                 }
             }
-            catch { }
+            catch
+            {
+            }
         }
 
-        private void AutoStartToggle_Changed(object sender, RoutedEventArgs e)
+        private async void AutoStartToggle_Changed(object sender, RoutedEventArgs e)
         {
             if (!_isLoaded) return;
 
             try
             {
-                using (var key = WinRegistry.CurrentUser.OpenSubKey(AutoStartRegistryKey, true))
+                if (IsPackaged())
                 {
-                    if (key == null) return;
-
+                    var startupTask = await global::Windows.ApplicationModel.StartupTask.GetAsync("KeySharpStartupTask");
                     if (AutoStartToggle.IsChecked == true)
                     {
-                        string exePath = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName ?? "";
-                        if (!string.IsNullOrEmpty(exePath))
-                            key.SetValue(AutoStartValueName, $"\"{exePath}\"");
+                        var state = await startupTask.RequestEnableAsync();
+                        AutoStartToggle.IsChecked = (state == global::Windows.ApplicationModel.StartupTaskState.Enabled ||
+                                                     state == global::Windows.ApplicationModel.StartupTaskState.EnabledByPolicy);
                     }
                     else
                     {
-                        key.DeleteValue(AutoStartValueName, false);
+                        startupTask.Disable();
                     }
                 }
+                else
+                {
+                    try
+                    {
+                        using (var key = WinRegistry.CurrentUser.OpenSubKey(AutoStartRegistryKey, true))
+                        {
+                            if (key != null && key.GetValue(AutoStartValueName) != null)
+                            {
+                                key.DeleteValue(AutoStartValueName, false);
+                            }
+                        }
+                    }
+                    catch { }
+                }
             }
-            catch (Exception ex)
+            catch
             {
-                Console.WriteLine($"Auto-start registry error: {ex.Message}");
             }
         }
 
@@ -935,11 +1076,17 @@ namespace KeySharp
             try
             {
                 // If we already alerted the user once, don't show the startup popup again
-                if (System.IO.File.Exists(PriorityAlertedPath)) return;
+                if (System.IO.File.Exists(PriorityAlertedPath))
+                {
+                    return;
+                }
 
                 using (var key = WinRegistry.CurrentUser.OpenSubKey(@"Software\Microsoft\Lighting\Providers", false))
                 {
-                    if (key == null) return;
+                    if (key == null)
+                    {
+                        return;
+                    }
 
                     string[] valueNames = key.GetValueNames();
                     string? keySharpName = null;
@@ -953,6 +1100,7 @@ namespace KeySharp
                             break;
                         }
                     }
+
 
                     if (keySharpName != null && keySharpName != "1")
                     {
@@ -969,6 +1117,7 @@ namespace KeySharp
                         {
                             topAppName = topAppName.Split('.')[topAppName.Split('.').Length - 1];
                         }
+
 
                         var result = MessageBox.Show(
                             $"KeySharp is registered for Dynamic Lighting, but '{topAppName}' currently has a higher priority and might block KeySharp's lighting commands in the background.\n\nWould you like to open Windows settings to drag KeySharp to the top of the priority list?",
@@ -989,11 +1138,13 @@ namespace KeySharp
                             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:personalization-lighting") { UseShellExecute = true });
                         }
                     }
+                    else
+                    {
+                    }
                 }
             }
-            catch (Exception ex)
+            catch
             {
-                Console.WriteLine($"Error checking Dynamic Lighting priority: {ex.Message}");
             }
         }
 
@@ -1316,6 +1467,384 @@ namespace KeySharp
             catch (Exception ex)
             {
                 MessageBox.Show("Error loading map: " + ex.Message, "Load Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        #endregion
+
+        #region Zone Preview Rendering
+
+
+
+        /// <summary>
+        /// Formats virtual key codes to a readable list of key names.
+        /// </summary>
+        private string GetFriendlyKeyNames(List<int>? vkCodes)
+        {
+            if (vkCodes == null || vkCodes.Count == 0) return "None";
+            return string.Join(", ", vkCodes.Select(vk =>
+            {
+                try
+                {
+                    var key = System.Windows.Input.KeyInterop.KeyFromVirtualKey(vk);
+                    return key.ToString();
+                }
+                catch
+                {
+                    return $"0x{vk:X2}";
+                }
+            }));
+        }
+
+        /// <summary>
+        /// Renders the zone preview on the canvas. Supports two modes:
+        /// 1. Vertical Bars mode (default): shows vertical zone segments with gradients.
+        /// 2. Key Map mode: shows detailed visual layout of individual keys.
+        /// </summary>
+        private void RenderZonePreview()
+        {
+            try
+            {
+                if (ZonePreviewCanvas == null || _engine == null) return;
+
+                ZonePreviewCanvas.Children.Clear();
+
+                var calibrationMap = _engine.GetCalibrationMap();
+                int zoneCount = _engine.GetZoneCount();
+                if (zoneCount <= 0)
+                {
+                    zoneCount = calibrationMap.Keys.Count > 0 ? calibrationMap.Keys.Max() + 1 : 24;
+                }
+
+                // Generate distinct zone colors using golden-angle hue spacing for all possible zones
+                var zoneColors = new Dictionary<int, Color>();
+                for (int i = 0; i < zoneCount; i++)
+                {
+                    double hue = (i * 137.508) % 360;
+                    zoneColors[i] = ColorFromHSV(hue, 0.8, 0.95);
+                }
+
+                double canvasWidth = ZonePreviewCanvas.ActualWidth > 0 ? ZonePreviewCanvas.ActualWidth : 480;
+                double canvasHeight = ZonePreviewCanvas.ActualHeight > 0 ? ZonePreviewCanvas.ActualHeight : 210;
+
+                // Render Vertical Bars for backlit zones
+                double barGap = 3;
+                double barW = (canvasWidth - barGap * (zoneCount + 1)) / zoneCount;
+
+                _previewBars.Clear();
+
+                for (int z = 0; z < zoneCount; z++)
+                {
+                    double x = barGap + z * (barW + barGap);
+                    Color bgColor = zoneColors[z];
+
+                    // Create a beautiful fading vertical gradient for the bar
+                    var gradient = new LinearGradientBrush
+                    {
+                        StartPoint = new Point(0, 1),
+                        EndPoint = new Point(0, 0)
+                    };
+                    gradient.GradientStops.Add(new GradientStop(bgColor, 0.05));
+                    gradient.GradientStops.Add(new GradientStop(Color.FromArgb((byte)(bgColor.A * 0.15), bgColor.R, bgColor.G, bgColor.B), 1.0));
+
+                    var barBorder = new System.Windows.Controls.Border
+                    {
+                        Width = barW,
+                        Height = canvasHeight - barGap * 2,
+                        Background = gradient,
+                        CornerRadius = new CornerRadius(3),
+                        BorderBrush = new SolidColorBrush(Color.FromArgb(90, bgColor.R, bgColor.G, bgColor.B)),
+                        BorderThickness = new Thickness(1),
+                    };
+
+                    // Zone number label at the bottom of the bar
+                    var textBlock = new TextBlock
+                    {
+                        Text = $"Z{z}",
+                        FontSize = zoneCount > 16 ? 8 : 10,
+                        Foreground = new SolidColorBrush(Colors.White),
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        VerticalAlignment = VerticalAlignment.Bottom,
+                        Margin = new Thickness(0, 0, 0, 8),
+                        FontWeight = FontWeights.Bold,
+                        Opacity = 0.85
+                    };
+                    barBorder.Child = textBlock;
+
+                    // Tooltip shows zone number and the mapped keys
+                    calibrationMap.TryGetValue(z, out var mappedKeys);
+                    string keysString = GetFriendlyKeyNames(mappedKeys);
+                    barBorder.ToolTip = $"Zone {z}\nMapped Keys: {keysString}";
+
+                    Canvas.SetLeft(barBorder, x);
+                    Canvas.SetTop(barBorder, barGap);
+                    ZonePreviewCanvas.Children.Add(barBorder);
+                    _previewBars.Add(barBorder);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"RenderZonePreview Error: {ex.Message}");
+            }
+        }
+
+        private void StartPreviewTimer()
+        {
+            if (_previewTimer == null)
+            {
+                _previewTimer = new System.Windows.Threading.DispatcherTimer();
+                _previewTimer.Interval = TimeSpan.FromMilliseconds(33); // 30 FPS updates
+                _previewTimer.Tick += PreviewTimer_Tick;
+            }
+            _previewTimer.Start();
+        }
+
+        private void StopPreviewTimer()
+        {
+            _previewTimer?.Stop();
+        }
+
+        private void PreviewTimer_Tick(object? sender, EventArgs e)
+        {
+            try
+            {
+                if (_engine == null || _previewBars.Count == 0) return;
+
+                var currentColors = _engine.GetCurrentLampColors();
+                if (currentColors.Length == 0) return;
+
+                for (int z = 0; z < _previewBars.Count; z++)
+                {
+                    if (z >= currentColors.Length) break;
+
+                    var winColor = currentColors[z];
+                    Color wpfColor = Color.FromArgb(winColor.A, winColor.R, winColor.G, winColor.B);
+
+                    var bar = _previewBars[z];
+                    if (bar.Background is LinearGradientBrush gradient && gradient.GradientStops.Count >= 2)
+                    {
+                        gradient.GradientStops[0].Color = wpfColor;
+                        gradient.GradientStops[1].Color = Color.FromArgb((byte)(wpfColor.A * 0.15), wpfColor.R, wpfColor.G, wpfColor.B);
+                        bar.BorderBrush = new SolidColorBrush(Color.FromArgb(90, wpfColor.R, wpfColor.G, wpfColor.B));
+                    }
+                }
+            }
+            catch { }
+        }
+
+        #endregion
+
+
+        #region Screen Mirroring Logic
+
+        private void PopulateScreenDropdown()
+        {
+            if (ScreenMirrorCombo == null) return;
+
+            int prevSelection = ScreenMirrorCombo.SelectedIndex;
+            ScreenMirrorCombo.Items.Clear();
+            ScreenMirrorCombo.Items.Add(new ComboBoxItem { Content = "Primary Monitor" });
+
+            try
+            {
+                var screens = System.Windows.Forms.Screen.AllScreens;
+                for (int i = 0; i < screens.Length; i++)
+                {
+                    var s = screens[i];
+                    ScreenMirrorCombo.Items.Add(new ComboBoxItem { Content = $"Monitor {i + 1} ({s.Bounds.Width}x{s.Bounds.Height})" });
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error populating screens: {ex.Message}");
+            }
+
+            ScreenMirrorCombo.SelectedIndex = prevSelection >= 0 && prevSelection < ScreenMirrorCombo.Items.Count ? prevSelection : 0;
+        }
+
+        private void ScreenMirrorCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (!_isLoaded || _engine == null || ScreenMirrorCombo == null) return;
+            _engine.SetSelectedScreenIndex(ScreenMirrorCombo.SelectedIndex);
+        }
+
+        private void SliderScreenMirrorSpeed_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            if (!_isLoaded || ScreenMirrorSpeedVal == null || _engine == null) return;
+            ScreenMirrorSpeedVal.Text = $"{(int)e.NewValue} FPS";
+            _engine.SetScreenMirrorSpeedFps((int)e.NewValue);
+        }
+
+        private void ScreenMirrorContrastToggle_Changed(object sender, RoutedEventArgs e)
+        {
+            if (!_isLoaded || _engine == null || ScreenMirrorContrastToggle == null) return;
+            _engine.SetScreenMirrorHighContrast(ScreenMirrorContrastToggle.IsChecked == true);
+        }
+
+        #endregion
+
+        #region UI Settings Sync & Visibilities
+
+        private void UpdatePanelVisibilities(LightMode mode, int idx)
+        {
+            if (MusicPanel != null)
+                MusicPanel.Visibility = (mode == LightMode.MusicSync) ? Visibility.Visible : Visibility.Collapsed;
+
+            if (RainbowPanel != null)
+                RainbowPanel.Visibility = (mode == LightMode.RainbowWave) ? Visibility.Visible : Visibility.Collapsed;
+
+            if (RipplePanel != null)
+                RipplePanel.Visibility = (idx == 2 || mode == LightMode.MusicSync) ? Visibility.Visible : Visibility.Collapsed;
+
+            if (RippleTypeRow != null)
+                RippleTypeRow.Visibility = (mode == LightMode.MusicSync) ? Visibility.Collapsed : Visibility.Visible;
+
+            if (ColorPanel != null)
+                ColorPanel.Visibility = (mode == LightMode.Static || mode == LightMode.FixedRipple) ? Visibility.Visible : Visibility.Collapsed;
+
+            if (ScreenMirrorPanel != null)
+            {
+                ScreenMirrorPanel.Visibility = (mode == LightMode.ScreenMirror) ? Visibility.Visible : Visibility.Collapsed;
+                if (mode == LightMode.ScreenMirror)
+                {
+                    PopulateScreenDropdown();
+                }
+            }
+        }
+
+        private void SyncUIWithEngineSettings()
+        {
+            _isHandlingSelection = true;
+            _isUpdatingUI = true;
+
+            try
+            {
+                // 1. Sync Mode
+                LightMode mode = _engine.GetMode();
+                int modeIdx = 0;
+                switch (mode)
+                {
+                    case LightMode.Static: modeIdx = 0; break;
+                    case LightMode.RainbowWave: modeIdx = 1; break;
+                    case LightMode.FixedRipple:
+                    case LightMode.PerZoneRipple:
+                    case LightMode.PerKeyRipple:
+                        modeIdx = 2;
+                        if (RippleTypeCombo != null)
+                        {
+                            RippleTypeCombo.SelectedIndex = mode switch
+                            {
+                                LightMode.FixedRipple => 0,
+                                LightMode.PerZoneRipple => 1,
+                                LightMode.PerKeyRipple => 2,
+                                _ => 0
+                            };
+                        }
+                        break;
+                    case LightMode.MusicSync: modeIdx = 3; break;
+                    case LightMode.ScreenMirror: modeIdx = 4; break;
+                }
+
+                if (ModeListBox != null)
+                {
+                    ModeListBox.SelectedIndex = modeIdx;
+                }
+
+                // 2. Sync Color
+                Windows.UI.Color c = _engine.GetColor();
+                if (InputR != null && InputG != null && InputB != null && HexInput != null)
+                {
+                    InputR.Text = c.R.ToString();
+                    InputG.Text = c.G.ToString();
+                    InputB.Text = c.B.ToString();
+                    HexInput.Text = $"#{c.R:X2}{c.G:X2}{c.B:X2}";
+                }
+                RgbToHsv(c.R, c.G, c.B, out _currentH, out _currentS, out _currentV);
+                if (HueSlider != null) HueSlider.Value = _currentH;
+                UpdateCanvasThumbs();
+
+                // 3. Sync Brightness
+                if (SliderBrightness != null && BrightnessVal != null)
+                {
+                    double brightnessPercent = _engine.GetBrightness() * 100.0;
+                    SliderBrightness.Value = brightnessPercent;
+                    BrightnessVal.Text = $"{(int)brightnessPercent}%";
+                }
+
+                // 4. Sync Rainbow settings
+                if (SliderRainbowSpread != null && RainbowSpreadVal != null)
+                {
+                    double spread = _engine.GetRainbowSpread();
+                    SliderRainbowSpread.Value = spread;
+                    RainbowSpreadVal.Text = $"{(int)spread}";
+                }
+                if (SliderRainbowSpeed != null && RainbowSpeedVal != null)
+                {
+                    int speed = _engine.GetRainbowSpeed();
+                    SliderRainbowSpeed.Value = speed;
+                    RainbowSpeedVal.Text = $"{speed}ms";
+                }
+
+                // 5. Sync Ripple settings
+                if (BounceToggle != null)
+                {
+                    BounceToggle.IsChecked = _engine.GetBounce();
+                }
+                if (SliderSteps != null && DistanceVal != null)
+                {
+                    int steps = _engine.GetMaxSteps();
+                    SliderSteps.Value = steps;
+                    DistanceVal.Text = $"{steps}";
+                }
+                if (SliderWidth != null && WidthVal != null)
+                {
+                    int width = _engine.GetRippleWidth();
+                    SliderWidth.Value = width;
+                    WidthVal.Text = $"{width}";
+                }
+                if (SliderSpeed != null && SpeedVal != null)
+                {
+                    int speed = _engine.GetSpeed();
+                    SliderSpeed.Value = speed;
+                    SpeedVal.Text = $"{speed}ms";
+                }
+
+                // 6. Sync Screen Mirror settings
+                if (ScreenMirrorCombo != null)
+                {
+                    ScreenMirrorCombo.SelectedIndex = _engine.GetSelectedScreenIndex();
+                }
+                if (SliderScreenMirrorSpeed != null && ScreenMirrorSpeedVal != null)
+                {
+                    int fps = _engine.GetScreenMirrorSpeedFps();
+                    SliderScreenMirrorSpeed.Value = fps;
+                    ScreenMirrorSpeedVal.Text = $"{fps} FPS";
+                }
+                if (ScreenMirrorContrastToggle != null)
+                {
+                    ScreenMirrorContrastToggle.IsChecked = _engine.GetScreenMirrorHighContrast();
+                }
+
+                // 7. Sync Audio settings
+                if (SliderThreshold != null && ThresholdVal != null)
+                {
+                    double sens = _engine.GetBeatSensitivity() * 100.0;
+                    SliderThreshold.Value = sens;
+                    ThresholdVal.Text = $"{(int)sens}%";
+                }
+
+                // Update panel visibilities
+                UpdatePanelVisibilities(mode, modeIdx);
+                UpdateModeTitle();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"SyncUIWithEngineSettings Error: {ex.Message}");
+            }
+            finally
+            {
+                _isHandlingSelection = false;
+                _isUpdatingUI = false;
             }
         }
 
