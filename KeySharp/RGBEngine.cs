@@ -119,11 +119,6 @@ namespace KeySharp
             {
                 LoadSettings();
 
-                if (delayHardwareInit)
-                {
-                    await Task.Delay(3000);
-                }
-
                 await AttemptReconnectAsync();
 
                 InitializeAudio();
@@ -135,6 +130,15 @@ namespace KeySharp
             catch (Exception ex)
             {
                 Console.WriteLine($"RGBEngine InitializeAsync Error: {ex.Message}");
+            }
+        }
+
+        public async Task RefreshHardwareConnectionAsync()
+        {
+            if (!_isReconnecting)
+            {
+                _isReconnecting = true;
+                await AttemptReconnectAsync();
             }
         }
 

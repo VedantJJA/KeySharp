@@ -21,13 +21,42 @@ namespace KeySharp
 
         public static event Action<int>? OnKeyPressed;
 
+        private static bool _isRetrying = false;
+
         public static void Start()
         {
             try
             {
+                if (_hookID != IntPtr.Zero) return;
+
                 _hookID = SetHook(_proc);
+                if (_hookID == IntPtr.Zero)
+                {
+                    StartRetryLoop();
+                }
             }
-            catch { }
+            catch 
+            {
+                StartRetryLoop();
+            }
+        }
+
+        private static async void StartRetryLoop()
+        {
+            if (_isRetrying) return;
+            _isRetrying = true;
+
+            while (_hookID == IntPtr.Zero)
+            {
+                await System.Threading.Tasks.Task.Delay(1000);
+                try
+                {
+                    _hookID = SetHook(_proc);
+                }
+                catch { }
+            }
+
+            _isRetrying = false;
         }
 
         public static void Stop()

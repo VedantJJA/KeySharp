@@ -113,7 +113,7 @@ namespace KeySharp
                             DeviceStatusText.Text = "None Detected";
                             DeviceStatusText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.Red);
                         }
-                        if (!_hasShownDeviceNotFoundPopup)
+                        if (!delayInit && !_hasShownDeviceNotFoundPopup)
                         {
                             _hasShownDeviceNotFoundPopup = true;
                             MessageBox.Show("No supported RGB keyboard detected. Please ensure your device is connected and supports Windows Dynamic Lighting.", "Device Not Found", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -127,21 +127,7 @@ namespace KeySharp
 
             _ = _engine.InitializeAsync(delayInit);
 
-            if (delayInit)
-            {
-                // Delay starting the keyboard hook on startup to allow keyboard drivers & session to initialize fully
-                System.Threading.Tasks.Task.Delay(5000).ContinueWith(_ =>
-                {
-                    Application.Current?.Dispatcher?.BeginInvoke(new Action(() =>
-                    {
-                        KeyboardHook.Start();
-                    }));
-                });
-            }
-            else
-            {
-                KeyboardHook.Start();
-            }
+            KeyboardHook.Start();
             KeyboardHook.OnKeyPressed += (vk) =>
             {
                 try
@@ -166,8 +152,9 @@ namespace KeySharp
                 catch (Exception ex) { Console.WriteLine($"Hook Primary Error: {ex.Message}"); }
             };
 
-            // Register Power Change Events
+            // Register Power Change & Session Switch Events
             SystemEvents.PowerModeChanged += SystemEvents_PowerModeChanged;
+            SystemEvents.SessionSwitch += SystemEvents_SessionSwitch;
 
             _isLoaded = true;
 
@@ -229,6 +216,21 @@ namespace KeySharp
             if (e.Mode == PowerModes.StatusChange)
             {
                 Application.Current.Dispatcher.Invoke(() => CheckPowerStatus(true));
+            }
+        }
+
+        private void SystemEvents_SessionSwitch(object sender, SessionSwitchEventArgs e)
+        {
+            if (e.Reason == SessionSwitchReason.SessionUnlock)
+            {
+                // Reset/re-register global keyboard hook and refresh lighting connection on session unlock
+                KeyboardHook.Stop();
+                KeyboardHook.Start();
+
+                if (_engine != null)
+                {
+                    _ = _engine.RefreshHardwareConnectionAsync();
+                }
             }
         }
 
@@ -684,7 +686,8 @@ namespace KeySharp
             {
                 try
                 {
-                    SystemEvents.PowerModeChanged -= SystemEvents_PowerModeChanged; // Clean up hook
+                    SystemEvents.PowerModeChanged -= SystemEvents_PowerModeChanged;
+                    SystemEvents.SessionSwitch -= SystemEvents_SessionSwitch;
                     if (_trayIcon != null)
                     {
                         _trayIcon.Visible = false;
@@ -694,6 +697,19 @@ namespace KeySharp
                 }
                 catch { }
             }
+        }
+
+        /// <summary>
+        /// Called during system shutdown/restart (via App.SessionEnding) to allow graceful cleanup.
+        /// </summary>
+        public void ForceClose()
+        {
+            try
+            {
+                _engine.StopEngine();
+                KeyboardHook.Stop();
+            }
+            catch { }
         }
 
         private void ExitApplication()

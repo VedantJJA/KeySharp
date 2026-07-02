@@ -12,6 +12,10 @@ namespace KeySharp
         private static extern bool SetProcessDpiAwarenessContext(int dpiFlag);
         private const int DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4;
 
+        // Register with Windows Restart Manager so the app is automatically re-launched after restart/update
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        private static extern int RegisterApplicationRestart(string pwzCommandline, int dwFlags);
+
         private const string MutexName = "KeySharp_SingleInstance_Mutex";
         private const string EventName = "KeySharp_Show_Event";
         private Mutex? _mutex;
@@ -101,7 +105,33 @@ namespace KeySharp
                 catch { }
             }
 
+            // Register with Windows Restart Manager so the app auto-relaunches after system restart/update.
+            // Pass --background so it starts hidden on restart.
+            try
+            {
+                RegisterApplicationRestart("--background", 0);
+            }
+            catch { }
+
+            // Handle system shutdown/restart gracefully instead of being force-killed
+            this.SessionEnding += App_SessionEnding;
+
             base.OnStartup(e);
+        }
+
+        private void App_SessionEnding(object sender, SessionEndingCancelEventArgs e)
+        {
+            // Allow the system to shut down / restart gracefully.
+            // Clean up the engine and keyboard hook so Windows doesn't force-kill us.
+            try
+            {
+                var mainWindow = Current.MainWindow as MainWindow;
+                if (mainWindow != null)
+                {
+                    mainWindow.ForceClose();
+                }
+            }
+            catch { }
         }
 
         private void WaitThreadFunc()
