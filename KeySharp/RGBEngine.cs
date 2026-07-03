@@ -11,6 +11,8 @@ using Windows.Devices.Lights;
 using Windows.System;
 using WinUIColor = Windows.UI.Color;
 using NAudio.Wave;
+using NAudio.CoreAudioApi;
+using NAudio.CoreAudioApi.Interfaces;
 
 namespace KeySharp
 {
@@ -57,6 +59,11 @@ namespace KeySharp
         private int _lastRippleOrigin = -1;
         private DateTime _lastBeatTime = DateTime.Now;
         private int _maxConcurrentWaves = 4;
+
+        private MMDeviceEnumerator? _deviceEnumerator;
+        private AudioDeviceNotificationClient? _notificationClient;
+        private DateTime _lastAudioReinitTime = DateTime.MinValue;
+        private readonly object _audioLock = new object();
 
         // Device Properties
         private string _connectedDeviceName = "None Detected";
@@ -189,14 +196,75 @@ namespace KeySharp
                 _capture?.StopRecording();
                 _capture?.Dispose();
                 ReleaseScreenMirrorResources();
+
+                if (_deviceEnumerator != null && _notificationClient != null)
+                {
+                    try
+                    {
+                        _deviceEnumerator.UnregisterEndpointNotificationCallback(_notificationClient);
+                    }
+                    catch { }
+                    _deviceEnumerator = null;
+                    _notificationClient = null;
+                }
             }
             catch { }
         }
 
+        private void ReinitializeAudio()
+        {
+            if (_cts.IsCancellationRequested) return;
+
+            lock (_audioLock)
+            {
+                if (_cts.IsCancellationRequested) return;
+
+                if ((DateTime.Now - _lastAudioReinitTime).TotalSeconds < 2)
+                {
+                    System.Diagnostics.Debug.WriteLine("Audio reinitialization rate-limited.");
+                    return;
+                }
+                _lastAudioReinitTime = DateTime.Now;
+
+                try
+                {
+                    if (_capture != null)
+                    {
+                        try { _capture.StopRecording(); } catch { }
+                        try { _capture.Dispose(); } catch { }
+                        _capture = null;
+                    }
+
+                    InitializeAudio();
+                    System.Diagnostics.Debug.WriteLine("Audio reinitialized successfully.");
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine("Failed to reinitialize audio: " + ex.Message);
+                }
+            }
+        }
+
         private void InitializeAudio()
         {
+            if (_cts.IsCancellationRequested) return;
+
             try
             {
+                try
+                {
+                    if (_deviceEnumerator == null)
+                    {
+                        _deviceEnumerator = new MMDeviceEnumerator();
+                        _notificationClient = new AudioDeviceNotificationClient(() => ReinitializeAudio());
+                        _deviceEnumerator.RegisterEndpointNotificationCallback(_notificationClient);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine("MMDeviceEnumerator initialization failed: " + ex.Message);
+                }
+
                 _capture = new WasapiLoopbackCapture();
                 _capture.DataAvailable += (s, e) =>
                 {
@@ -244,6 +312,29 @@ namespace KeySharp
                 System.Diagnostics.Debug.WriteLine("Audio Init Failed. Check Manifest capabilities: " + ex.Message);
                 _capture = null;
             }
+        }
+
+        private class AudioDeviceNotificationClient : IMMNotificationClient
+        {
+            private readonly Action _onDefaultDeviceChanged;
+
+            public AudioDeviceNotificationClient(Action onDefaultDeviceChanged)
+            {
+                _onDefaultDeviceChanged = onDefaultDeviceChanged;
+            }
+
+            public void OnDefaultDeviceChanged(DataFlow flow, Role role, string defaultDeviceId)
+            {
+                if (flow == DataFlow.Render && (role == Role.Console || role == Role.Multimedia))
+                {
+                    Task.Run(() => _onDefaultDeviceChanged());
+                }
+            }
+
+            public void OnDeviceAdded(string deviceId) { }
+            public void OnDeviceRemoved(string deviceId) { }
+            public void OnDeviceStateChanged(string deviceId, DeviceState newState) { }
+            public void OnPropertyValueChanged(string deviceId, PropertyKey key) { }
         }
         // Slider 1-100 maps to minimum floor threshold of 0.01 to 1.0
         public void SetBeatSensitivity(double val)
