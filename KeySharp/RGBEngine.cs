@@ -45,6 +45,7 @@ namespace KeySharp
         private LampArray? _lampArray;
         private LightMode _currentMode = LightMode.Static;
         private LightMode _lastUserMode = LightMode.Static;
+        private LightMode _lastRippleMode = LightMode.FixedRipple;
         private WinUIColor _currentColor = WinUIColor.FromArgb(255, 0, 122, 255);
         private Random _rng = new Random();
 
@@ -169,7 +170,23 @@ namespace KeySharp
                         }
                     }
                     _connectedDeviceName = devices[0].Name;
-                    UpdateHardwareColor();
+                    if (_currentMode == LightMode.Static)
+                    {
+                        UpdateHardwareColor();
+                    }
+                    else
+                    {
+                        lock (_hwLock)
+                        {
+                            _lampArray?.SetColor(WinUIColor.FromArgb(255, 0, 0, 0));
+                            if (_lampArray != null)
+                            {
+                                int count = _lampArray.LampCount;
+                                if (_currentLampColors.Length != count) _currentLampColors = new WinUIColor[count];
+                                for (int i = 0; i < count; i++) _currentLampColors[i] = WinUIColor.FromArgb(255, 0, 0, 0);
+                            }
+                        }
+                    }
                     OnHardwareConnected?.Invoke();
                 }
                 else
@@ -397,6 +414,11 @@ namespace KeySharp
             if (mode != LightMode.MapTest && mode != LightMode.Calibration)
             {
                 _lastUserMode = mode;
+            }
+
+            if (mode == LightMode.FixedRipple || mode == LightMode.PerZoneRipple || mode == LightMode.PerKeyRipple)
+            {
+                _lastRippleMode = mode;
             }
 
             lock (_wavesLock)
@@ -1095,6 +1117,8 @@ namespace KeySharp
 
         public LightMode GetMode() => _currentMode;
         public LightMode GetLastUserMode() => _lastUserMode;
+        public LightMode GetLastRippleMode() => _lastRippleMode;
+        public void SetLastRippleMode(LightMode mode) { _lastRippleMode = mode; SaveSettings(); }
         public WinUIColor GetColor() => _currentColor;
         public WinUIColor[] GetCurrentLampColors()
         {
@@ -1146,6 +1170,7 @@ namespace KeySharp
                 using (var sw = new StreamWriter(_settingsPath))
                 {
                     sw.WriteLine($"Mode={(int)_lastUserMode}");
+                    sw.WriteLine($"LastRippleMode={(int)_lastRippleMode}");
                     sw.WriteLine($"Color={_currentColor.R},{_currentColor.G},{_currentColor.B}");
                     sw.WriteLine($"Brightness={_globalBrightness * 100.0}");
                     sw.WriteLine($"RainbowSpeed={_rainbowSpeedMs}");
@@ -1182,6 +1207,13 @@ namespace KeySharp
                         case "Mode":
                             _currentMode = (LightMode)int.Parse(val);
                             _lastUserMode = _currentMode;
+                            if (_currentMode == LightMode.FixedRipple || _currentMode == LightMode.PerZoneRipple || _currentMode == LightMode.PerKeyRipple)
+                            {
+                                _lastRippleMode = _currentMode;
+                            }
+                            break;
+                        case "LastRippleMode":
+                            _lastRippleMode = (LightMode)int.Parse(val);
                             break;
                         case "Color":
                             var rgb = val.Split(',');

@@ -496,6 +496,29 @@
                     </StackPanel>
                 </ui:Card>
             </Grid>
+
+            <!-- 24-ZONE LEGION LAYOUT OVERLAY / POPUP -->
+            <Grid x:Name="Legion24PopupOverlay" Grid.Column="0" Grid.ColumnSpan="2" Background="#95000000" Visibility="Collapsed" Panel.ZIndex="210">
+                <!-- Callout Card Overlay (styled like tutorial bubble) -->
+                <ui:Card Width="360" Padding="20" HorizontalAlignment="Center" VerticalAlignment="Center" Background="#1C1C1E" BorderBrush="#00FFCC" BorderThickness="1.5">
+                    <ui:Card.Effect>
+                        <DropShadowEffect Color="#00FFCC" BlurRadius="20" ShadowDepth="0" Opacity="0.4"/>
+                    </ui:Card.Effect>
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                            <ui:SymbolIcon Symbol="Laptop24" Margin="0,0,10,0" VerticalAlignment="Center" Foreground="#00FFCC" Filled="True"/>
+                            <TextBlock Text="Legion 24-Zone Layout Detected" FontSize="14" FontWeight="Bold" VerticalAlignment="Center" Foreground="White"/>
+                        </StackPanel>
+
+                        <TextBlock Text="KeySharp detected a 24-zone RGB keyboard. Would you like to automatically load the pre-configured Lenovo Legion 24-Zone key mapping?" FontSize="12" LineHeight="18" TextWrapping="Wrap" Margin="0,0,0,18" Opacity="0.9" Foreground="#DDD"/>
+                        
+                        <StackPanel Orientation="Vertical">
+                            <ui:Button x:Name="UseLegion24Btn" Content="Use Legion 24-Zone Layout" Click="UseLegion24Layout_Click" Appearance="Primary" HorizontalAlignment="Stretch" Padding="8" FontSize="12" Margin="0,0,0,8"/>
+                            <ui:Button x:Name="SkipLegion24Btn" Content="Manual Calibration" Click="CloseLegion24Popup_Click" Appearance="Secondary" HorizontalAlignment="Stretch" Padding="8" FontSize="12"/>
+                        </StackPanel>
+                    </StackPanel>
+                </ui:Card>
+            </Grid>
         </Grid>
     </Grid>
 </ui:FluentWindow>

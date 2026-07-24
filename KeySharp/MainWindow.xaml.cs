@@ -217,6 +217,13 @@ namespace KeySharp
             {
                 Application.Current.Dispatcher.Invoke(() => CheckPowerStatus(true));
             }
+            else if (e.Mode == PowerModes.Resume)
+            {
+                if (_engine != null)
+                {
+                    _ = _engine.RefreshHardwareConnectionAsync();
+                }
+            }
         }
 
         private void SystemEvents_SessionSwitch(object sender, SessionSwitchEventArgs e)
@@ -415,6 +422,7 @@ namespace KeySharp
                             _engine.SetSettingsActive(false);
                             _engine.SetMode(LightMode.Calibration);
                             UpdateCalibrationUI();
+                            Check24ZoneCalibration();
 
                             if (SettingsMainView != null) SettingsMainView.Visibility = Visibility.Collapsed;
                             if (SettingsCalibrationView != null) SettingsCalibrationView.Visibility = Visibility.Visible;
@@ -758,7 +766,21 @@ namespace KeySharp
                 {
                     case 0: mode = LightMode.Static; break;
                     case 1: mode = LightMode.RainbowWave; break;
-                    case 2: mode = GetRippleModeFromCombo(); break;
+                    case 2: 
+                        mode = _engine.GetLastRippleMode(); 
+                        if (RippleTypeCombo != null)
+                        {
+                            _isUpdatingUI = true;
+                            RippleTypeCombo.SelectedIndex = mode switch
+                            {
+                                LightMode.FixedRipple => 0,
+                                LightMode.PerZoneRipple => 1,
+                                LightMode.PerKeyRipple => 2,
+                                _ => 0
+                            };
+                            _isUpdatingUI = false;
+                        }
+                        break;
                     case 3: mode = LightMode.MusicSync; break;
                     case 4: mode = LightMode.ScreenMirror; break;
                     default: mode = LightMode.Static; break;
@@ -890,12 +912,14 @@ namespace KeySharp
 
         private void RippleTypeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            if (!_isLoaded || _engine == null || RippleTypeCombo == null) return;
+            if (!_isLoaded || _engine == null || RippleTypeCombo == null || _isUpdatingUI) return;
 
-            // Only apply if we're currently in Ripple mode (sidebar index 2) or MusicSync
+            LightMode mode = GetRippleModeFromCombo();
+            _engine.SetLastRippleMode(mode);
+
+            // Only apply mode immediately if we're currently in Ripple mode (sidebar index 2)
             if (ModeListBox != null && ModeListBox.SelectedIndex == 2)
             {
-                LightMode mode = GetRippleModeFromCombo();
                 _engine.SetMode(mode);
 
                 // Show color panel only for Fixed Color ripple
@@ -929,6 +953,7 @@ namespace KeySharp
             _engine.SetSettingsActive(false);
             _engine.SetMode(LightMode.Calibration);
             UpdateCalibrationUI();
+            Check24ZoneCalibration();
 
             if (SettingsMainView != null) SettingsMainView.Visibility = Visibility.Collapsed;
             if (SettingsMapTestView != null) SettingsMapTestView.Visibility = Visibility.Collapsed;
@@ -1411,6 +1436,69 @@ namespace KeySharp
 
         #endregion
 
+        #region 24-Zone Legion Detection Popup Handlers
+
+        private void Check24ZoneCalibration()
+        {
+            try
+            {
+                if (_engine == null) return;
+                int zoneCount = _engine.GetZoneCount();
+                if (zoneCount == 24 && Legion24PopupOverlay != null)
+                {
+                    Legion24PopupOverlay.Visibility = Visibility.Visible;
+                }
+            }
+            catch { }
+        }
+
+        private void UseLegion24Layout_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (Legion24PopupOverlay != null)
+                    Legion24PopupOverlay.Visibility = Visibility.Collapsed;
+
+                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                string path = System.IO.Path.Combine(baseDir, "Layouts", "Legion24.csv");
+                if (!System.IO.File.Exists(path))
+                {
+                    path = System.IO.Path.Combine(baseDir, "Legion24.csv");
+                }
+                if (!System.IO.File.Exists(path))
+                {
+                    string rootRepoPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(baseDir, "..", "..", "..", "..", "Legion24.csv"));
+                    if (System.IO.File.Exists(rootRepoPath))
+                    {
+                        path = rootRepoPath;
+                    }
+                }
+
+                if (System.IO.File.Exists(path))
+                {
+                    _engine.LoadMap(path);
+                    UpdateCalibrationUI();
+                    MessageBox.Show("Legion 24-Zone layout loaded successfully!", "Layout Applied", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                else
+                {
+                    MessageBox.Show($"Legion 24-Zone layout file could not be found at: {path}", "Layout Not Found", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error loading Legion 24-Zone layout: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void CloseLegion24Popup_Click(object sender, RoutedEventArgs e)
+        {
+            if (Legion24PopupOverlay != null)
+                Legion24PopupOverlay.Visibility = Visibility.Collapsed;
+        }
+
+        #endregion
+
         #region Calibration Handlers
 
         private void PrevZone_Click(object sender, RoutedEventArgs e)
@@ -1746,19 +1834,21 @@ namespace KeySharp
                     case LightMode.PerZoneRipple:
                     case LightMode.PerKeyRipple:
                         modeIdx = 2;
-                        if (RippleTypeCombo != null)
-                        {
-                            RippleTypeCombo.SelectedIndex = mode switch
-                            {
-                                LightMode.FixedRipple => 0,
-                                LightMode.PerZoneRipple => 1,
-                                LightMode.PerKeyRipple => 2,
-                                _ => 0
-                            };
-                        }
                         break;
                     case LightMode.MusicSync: modeIdx = 3; break;
                     case LightMode.ScreenMirror: modeIdx = 4; break;
+                }
+
+                if (RippleTypeCombo != null)
+                {
+                    LightMode lastRipple = _engine.GetLastRippleMode();
+                    RippleTypeCombo.SelectedIndex = lastRipple switch
+                    {
+                        LightMode.FixedRipple => 0,
+                        LightMode.PerZoneRipple => 1,
+                        LightMode.PerKeyRipple => 2,
+                        _ => 0
+                    };
                 }
 
                 if (ModeListBox != null)
